@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { AppState, Member } from '../types';
 import { format, subMonths, addMonths, isSameMonth } from 'date-fns';
-import { ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Clock, Search, Wallet, Calendar, Filter, RotateCcw } from 'lucide-react';
-import { generateId } from '../services/storageService';
+import { ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Clock, Search, Wallet, RotateCcw, Filter, Trash2, ChevronDown } from 'lucide-react';
+import { generateId, dbActions } from '../services/storageService';
 
 interface TrackerProps {
   state: AppState;
@@ -22,6 +22,7 @@ export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, curr
   const [selectedMemberForPay, setSelectedMemberForPay] = useState<Member | null>(null);
   const [payAmount, setPayAmount] = useState('');
   const [payTargetMonth, setPayTargetMonth] = useState(''); 
+  const [expandedPaymentId, setExpandedPaymentId] = useState<string | null>(null);
 
   const handlePrevMonth = () => onDateChange(subMonths(currentDate, 1));
   const handleNextMonth = () => onDateChange(addMonths(currentDate, 1));
@@ -96,8 +97,9 @@ export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, curr
 
   const openPayModal = (member: Member, remaining: number) => {
       setSelectedMemberForPay(member);
-      setPayAmount(remaining.toString());
+      setPayAmount(remaining > 0 ? remaining.toString() : '');
       setPayTargetMonth(selectedMonthStr);
+      setExpandedPaymentId(null);
       setIsPayModalOpen(true);
   };
 
@@ -117,9 +119,22 @@ export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, curr
     });
     
     setPayAmount('');
-    setIsPayModalOpen(false);
-    setSelectedMemberForPay(null);
+    setIsPayModalOpen(false); 
   };
+
+  const handleDeleteContribution = (id: string) => {
+    if (window.confirm('Are you sure you want to delete this payment record?')) {
+        dbActions.removeContribution(id);
+    }
+  };
+
+  // Get current contributions for the modal view
+  const currentMemberContributions = useMemo(() => {
+    if (!selectedMemberForPay || !payTargetMonth) return [];
+    return state.contributions
+      .filter(c => c.memberId === selectedMemberForPay.id && c.month === payTargetMonth)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [state.contributions, selectedMemberForPay, payTargetMonth]);
 
   return (
     <div className="space-y-6 pb-24 md:pb-0 animate-fade-in">
@@ -239,7 +254,11 @@ export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, curr
          <div className="divide-y divide-md-sys-color-outline/10">
              {trackerData.length > 0 ? (
                  trackerData.map(member => (
-                    <div key={member.id} className="p-4 md:grid md:grid-cols-4 md:gap-4 flex flex-col gap-3 items-center md:items-center hover:bg-md-sys-color-surface-container-high transition-colors">
+                    <div 
+                        key={member.id} 
+                        onClick={() => openPayModal(member, member.remaining)}
+                        className="p-4 md:grid md:grid-cols-4 md:gap-4 flex flex-col gap-3 items-center md:items-center hover:bg-md-sys-color-surface-container-high transition-colors cursor-pointer group"
+                    >
                         
                         {/* Member Info */}
                         <div className="w-full md:col-span-2 flex items-center gap-3">
@@ -284,17 +303,22 @@ export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, curr
                         {/* Amount & Action */}
                         <div className="w-full md:text-right flex md:justify-end items-center justify-between">
                             <span className="md:hidden text-xs text-md-sys-color-on-surface-variant font-medium">BALANCE</span>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-4">
                                 <div className="text-right">
                                     <p className="font-bold text-md-sys-color-on-surface">{state.currency}{member.paid}</p>
-                                    {member.remaining > 0 && (
+                                    {member.remaining > 0 ? (
                                         <p className="text-xs text-md-sys-color-error">Due: {state.currency}{member.remaining}</p>
+                                    ) : (
+                                        <p className="text-xs text-md-sys-color-primary">Settled</p>
                                     )}
                                 </div>
                                 {member.status !== 'paid' && (
                                     <button 
-                                        onClick={() => openPayModal(member, member.remaining)}
-                                        className="bg-md-sys-color-primary text-md-sys-color-on-primary px-3 py-1.5 rounded-full text-sm font-medium hover:shadow-md-elevation-1 transition-all flex items-center gap-1"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            openPayModal(member, member.remaining);
+                                        }}
+                                        className="px-4 py-2 rounded-full text-sm font-bold shadow-sm transition-all flex items-center gap-2 bg-md-sys-color-primary text-md-sys-color-on-primary hover:bg-md-sys-color-primary/90 hover:shadow-md-elevation-1 active:scale-95"
                                     >
                                         <Wallet size={16} /> Pay
                                     </button>
@@ -315,21 +339,83 @@ export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, curr
       {/* Pay Modal */}
       {isPayModalOpen && selectedMemberForPay && (
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-           <div className="bg-md-sys-color-surface-container-high w-full max-w-[320px] md:max-w-[400px] rounded-md-xl p-6 shadow-md-elevation-3">
+           <div className="bg-md-sys-color-surface-container-high w-full max-w-[360px] md:max-w-[420px] rounded-md-xl p-6 shadow-md-elevation-3 flex flex-col max-h-[85vh]">
+                 <div className="mb-4">
+                     <h3 className="text-xl font-medium text-md-sys-color-on-surface">Manage Payment</h3>
+                     <p className="text-sm text-md-sys-color-on-surface-variant">{selectedMemberForPay.name} • {format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}</p>
+                 </div>
+
+                 {/* Existing Contributions List */}
+                 <div className="flex-1 overflow-y-auto mb-6 bg-md-sys-color-surface-container-low rounded-lg p-2 space-y-2 border border-md-sys-color-outline/10">
+                    <div className="flex justify-between items-center px-2 pt-1 pb-1">
+                        <p className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Payment History</p>
+                        <span className="text-[10px] text-md-sys-color-outline">{currentMemberContributions.length} records</span>
+                    </div>
+                    {currentMemberContributions.length > 0 ? (
+                        currentMemberContributions.map(c => (
+                            <div 
+                                key={c.id} 
+                                onClick={() => setExpandedPaymentId(expandedPaymentId === c.id ? null : c.id)}
+                                className={`flex flex-col p-3 bg-md-sys-color-surface rounded border transition-all cursor-pointer ${
+                                    expandedPaymentId === c.id 
+                                    ? 'border-md-sys-color-primary shadow-md-elevation-1 ring-1 ring-md-sys-color-primary' 
+                                    : 'border-md-sys-color-outline/5 hover:border-md-sys-color-primary/20'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between w-full">
+                                    <div>
+                                        <p className="font-bold text-md-sys-color-primary text-sm">+{state.currency}{c.amount}</p>
+                                        <p className="text-[10px] text-md-sys-color-on-surface-variant">{format(new Date(c.date), 'MMM d, h:mm a')}</p>
+                                    </div>
+                                    <div className={`transition-transform duration-200 ${expandedPaymentId === c.id ? 'rotate-180' : ''}`}>
+                                        <ChevronDown size={16} className="text-md-sys-color-outline/30" />
+                                    </div>
+                                </div>
+                                
+                                {expandedPaymentId === c.id && (
+                                    <div className="mt-3 pt-2 border-t border-md-sys-color-outline/10 animate-fade-in">
+                                        {c.note && <p className="text-xs text-md-sys-color-on-surface-variant mb-2 italic">"{c.note}"</p>}
+                                        <button 
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteContribution(c.id);
+                                            }}
+                                            className="w-full flex items-center justify-center gap-2 bg-md-sys-color-error-container text-md-sys-color-on-error-container text-xs font-bold py-2 rounded hover:opacity-80 transition-opacity"
+                                        >
+                                            <Trash2 size={14} /> Delete Record
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        ))
+                    ) : (
+                        <p className="text-xs text-center py-4 text-md-sys-color-outline/50 italic">No payments recorded yet.</p>
+                    )}
+                 </div>
+
                  <form onSubmit={handlePaySubmit} className="space-y-4">
-                    <h3 className="text-xl text-md-sys-color-on-surface">Record Payment</h3>
-                    <p className="text-sm text-md-sys-color-on-surface-variant">For {selectedMemberForPay.name} - {format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}</p>
-                    <div className="flex items-center bg-md-sys-color-surface-container-low p-3 rounded-md border border-md-sys-color-outline/10 focus-within:border-md-sys-color-primary transition-colors">
-                        <span className="text-lg mr-2 font-bold">{state.currency}</span>
-                        <input autoFocus type="number" className="w-full bg-transparent outline-none text-xl font-medium" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+                    <div className="space-y-2">
+                        <label className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Add New Payment</label>
+                        <div className="flex items-center bg-md-sys-color-surface rounded-md border border-md-sys-color-outline/10 focus-within:border-md-sys-color-primary transition-colors p-3">
+                            <span className="text-lg mr-2 font-bold text-md-sys-color-on-surface-variant">{state.currency}</span>
+                            <input 
+                                autoFocus={currentMemberContributions.length === 0} 
+                                type="number" 
+                                className="w-full bg-transparent outline-none text-xl font-medium text-md-sys-color-on-surface" 
+                                value={payAmount} 
+                                onChange={e => setPayAmount(e.target.value)} 
+                                placeholder="Enter amount"
+                            />
+                        </div>
                     </div>
+                    
                     <div className="flex gap-2">
-                        <button type="button" onClick={() => setPayAmount(state.monthlyTarget.toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low">Full ({state.currency}{state.monthlyTarget})</button>
-                        <button type="button" onClick={() => setPayAmount((state.monthlyTarget/2).toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low">Half</button>
+                        <button type="button" onClick={() => setPayAmount(state.monthlyTarget.toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Full ({state.currency}{state.monthlyTarget})</button>
+                        <button type="button" onClick={() => setPayAmount((state.monthlyTarget/2).toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Half</button>
                     </div>
-                     <div className="flex justify-end gap-2 mt-4">
-                        <button type="button" onClick={() => setIsPayModalOpen(false)} className="px-4 py-2 text-md-sys-color-primary font-medium hover:bg-md-sys-color-primary/10 rounded-full">Cancel</button>
-                        <button type="submit" className="px-6 py-2 bg-md-sys-color-primary text-md-sys-color-on-primary rounded-full font-medium shadow-md-elevation-1">Confirm</button>
+                     <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-md-sys-color-outline/10">
+                        <button type="button" onClick={() => { setIsPayModalOpen(false); setSelectedMemberForPay(null); }} className="px-4 py-2 text-md-sys-color-primary font-medium hover:bg-md-sys-color-primary/10 rounded-full">Close</button>
+                        <button type="submit" disabled={!payAmount} className="px-6 py-2 bg-md-sys-color-primary text-md-sys-color-on-primary rounded-full font-medium shadow-md-elevation-1 disabled:opacity-50 disabled:shadow-none">Add</button>
                     </div>
                  </form>
            </div>
