@@ -131,6 +131,7 @@ const App: React.FC = () => {
           onNavigate={handleNavigate} 
           currentDate={globalDate}
           onDateChange={setGlobalDate}
+          onAddContribution={addContribution}
         />;
       case 'tracker':
         return <Tracker 
@@ -158,6 +159,7 @@ const App: React.FC = () => {
           onNavigate={handleNavigate}
           currentDate={globalDate}
           onDateChange={setGlobalDate}
+          onAddContribution={addContribution}
         />;
     }
   };

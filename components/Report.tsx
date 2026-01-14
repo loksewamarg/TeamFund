@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { AppState } from '../types';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, 
-  CartesianGrid, AreaChart, Area, PieChart, Pie, Cell, Legend, Line, ComposedChart 
+  CartesianGrid, AreaChart, Area, Cell, Legend, Line, ComposedChart 
 } from 'recharts';
 import { 
   TrendingUp, Users, Download, Award, Target, Wallet, 
@@ -66,7 +66,7 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
     });
   }, [state]);
 
-  // --- 3. Contribution by Member Data (Top 5 + Others) ---
+  // --- 3. Contribution by Member Data (All) ---
   const memberContributionData = useMemo(() => {
     const map = new Map<string, number>();
     state.contributions.forEach(c => {
@@ -74,21 +74,9 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
         map.set(memberName, (map.get(memberName) || 0) + c.amount);
     });
     
-    let data = Array.from(map.entries())
+    return Array.from(map.entries())
         .map(([name, value]) => ({ name, value }))
         .sort((a, b) => b.value - a.value);
-
-    // Limit to Top 5 and aggregate others
-    if (data.length > 5) {
-        const top5 = data.slice(0, 5);
-        const othersValue = data.slice(5).reduce((sum, item) => sum + item.value, 0);
-        if (othersValue > 0) {
-            top5.push({ name: 'Others', value: othersValue });
-        }
-        data = top5;
-    }
-    
-    return data;
   }, [state]);
 
   // --- 4. Matrix Data (Last 6 Months) ---
@@ -262,43 +250,39 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
               </div>
           </div>
 
-          {/* Contributions by Member (Pie) */}
-          <div className="bg-white rounded-md-xl border border-md-sys-color-outline/10 p-4 md:p-6 shadow-sm flex flex-col">
+          {/* Contributions by Member (List) */}
+          <div className="bg-white rounded-md-xl border border-md-sys-color-outline/10 p-4 md:p-6 shadow-sm flex flex-col h-[400px]">
                <h3 className="text-base md:text-lg font-bold text-md-sys-color-on-surface mb-2 flex items-center gap-2">
                    <Users size={18} className="text-md-sys-color-tertiary" /> Contributions by Member
                </h3>
-               <p className="text-xs text-md-sys-color-on-surface-variant mb-4">Top contributors</p>
+               <p className="text-xs text-md-sys-color-on-surface-variant mb-4">Ranked by total contribution</p>
                
-               <div className="flex-1 min-h-[250px] relative">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                            <Pie
-                                data={memberContributionData}
-                                cx="50%"
-                                cy="50%"
-                                innerRadius={60}
-                                outerRadius={80}
-                                paddingAngle={2}
-                                dataKey="value"
-                            >
-                                {memberContributionData.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="white" strokeWidth={2} />
-                                ))}
-                            </Pie>
-                            <RechartsTooltip 
-                                cursor={{fill: 'transparent'}}
-                                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}
-                            />
-                            <Legend verticalAlign="bottom" height={36} iconType="circle" iconSize={8} />
-                        </PieChart>
-                    </ResponsiveContainer>
-                    {/* Center Text */}
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none pb-8">
-                         <div className="text-center">
-                             <p className="text-xs text-gray-500">Top Contributor</p>
-                             <p className="text-sm font-bold text-md-sys-color-on-surface truncate max-w-[100px]">{memberContributionData[0]?.name}</p>
-                         </div>
-                    </div>
+               <div className="flex-1 overflow-y-auto pr-2">
+                    <table className="w-full text-sm">
+                        <thead className="text-xs text-md-sys-color-on-surface-variant uppercase border-b border-md-sys-color-outline/10 sticky top-0 bg-white z-10">
+                            <tr>
+                                <th className="text-left py-2 font-medium bg-white">Member</th>
+                                <th className="text-right py-2 font-medium bg-white">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-md-sys-color-outline/10">
+                            {memberContributionData.map((item, index) => (
+                                <tr key={index} className="group hover:bg-md-sys-color-surface-container-low transition-colors">
+                                    <td className="py-3 text-md-sys-color-on-surface font-medium">
+                                        <div className="flex items-center gap-3">
+                                            <span className="w-6 h-6 rounded-full bg-md-sys-color-surface-container-high flex items-center justify-center text-[10px] text-md-sys-color-on-surface-variant font-bold shrink-0">
+                                                {index + 1}
+                                            </span>
+                                            <span className="truncate">{item.name}</span>
+                                        </div>
+                                    </td>
+                                    <td className="py-3 text-right font-bold text-md-sys-color-primary whitespace-nowrap">
+                                        {state.currency}{item.value.toLocaleString()}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                </div>
           </div>
       </div>

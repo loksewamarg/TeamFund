@@ -1,23 +1,32 @@
-import React, { useMemo } from 'react';
-import { AppState } from '../types';
+import React, { useMemo, useState } from 'react';
+import { AppState, Member } from '../types';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie, Legend } from 'recharts';
-import { ChevronLeft, ChevronRight, TrendingUp, AlertCircle, CheckCircle2, Clock, Wallet, Layers, ArrowRight, Calendar, RotateCcw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, TrendingUp, AlertCircle, CheckCircle2, Clock, Wallet, Layers, ArrowRight, Calendar, RotateCcw, Trash2, ChevronDown } from 'lucide-react';
 import { format, subMonths, addMonths, isSameMonth } from 'date-fns';
+import { generateId, dbActions } from '../services/storageService';
 
 interface DashboardProps {
   state: AppState;
   onNavigate: (view: any, filter?: string) => void;
   currentDate: Date;
   onDateChange: (date: Date) => void;
+  onAddContribution: (contribution: any) => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, currentDate, onDateChange }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, currentDate, onDateChange, onAddContribution }) => {
   const handlePrevMonth = () => onDateChange(subMonths(currentDate, 1));
   const handleNextMonth = () => onDateChange(addMonths(currentDate, 1));
   const handleResetDate = () => onDateChange(new Date());
   
   const selectedMonthStr = format(currentDate, 'yyyy-MM');
   const isCurrentMonth = isSameMonth(currentDate, new Date());
+
+  // Payment Modal State
+  const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [selectedMemberForPay, setSelectedMemberForPay] = useState<Member | null>(null);
+  const [payAmount, setPayAmount] = useState('');
+  const [payTargetMonth, setPayTargetMonth] = useState(''); 
+  const [expandedPaymentId, setExpandedPaymentId] = useState<string | null>(null);
 
   const stats = useMemo(() => {
     const monthContribs = state.contributions.filter(c => c.month === selectedMonthStr);
@@ -111,6 +120,50 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
   const DISPLAY_LIMIT = 9;
   const displayPaidMembers = stats.paidMembers.slice(0, DISPLAY_LIMIT);
   const remainingPaidCount = Math.max(0, stats.paidMembers.length - DISPLAY_LIMIT);
+
+  // --- Modal Logic ---
+
+  const openPayModal = (member: Member, remaining: number) => {
+      setSelectedMemberForPay(member);
+      setPayAmount(remaining > 0 ? remaining.toString() : '');
+      setPayTargetMonth(selectedMonthStr);
+      setExpandedPaymentId(null);
+      setIsPayModalOpen(true);
+  };
+
+  const handlePaySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMemberForPay || !payAmount) return;
+    
+    const recordDate = new Date(); 
+    
+    onAddContribution({
+      id: generateId(),
+      memberId: selectedMemberForPay.id,
+      amount: Number(payAmount),
+      date: recordDate.toISOString(),
+      month: payTargetMonth,
+      note: `Payment for ${format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}`
+    });
+    
+    setPayAmount('');
+    setIsPayModalOpen(false); 
+  };
+
+  const handleDeleteContribution = (id: string) => {
+    if (window.confirm('Are you sure you want to delete this payment record?')) {
+        dbActions.removeContribution(id);
+    }
+  };
+
+  // Get current contributions for the modal view
+  const currentMemberContributions = useMemo(() => {
+    if (!selectedMemberForPay || !payTargetMonth) return [];
+    return state.contributions
+      .filter(c => c.memberId === selectedMemberForPay.id && c.month === payTargetMonth)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [state.contributions, selectedMemberForPay, payTargetMonth]);
+
 
   return (
     <div className="animate-fade-in pb-20">
@@ -382,12 +435,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     {stats.outstandingMembers.length > 0 ? (
                         stats.outstandingMembers.map(member => (
-                            <button 
+                            <div 
                                 key={member.id} 
-                                onClick={() => onNavigate('tracker')}
-                                className="w-full flex items-center justify-between p-3 hover:bg-md-sys-color-surface-container-high rounded-md-lg transition-colors group text-left border border-transparent hover:border-md-sys-color-outline/10"
+                                className="w-full flex items-center justify-between p-3 hover:bg-md-sys-color-surface-container-high rounded-md-lg transition-colors group text-left border border-transparent hover:border-md-sys-color-outline/10 cursor-pointer"
+                                onClick={() => openPayModal(member, member.balance)}
                             >
-                            <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
                                 <div className="w-8 h-8 rounded-full bg-md-sys-color-surface-variant flex items-center justify-center font-bold text-xs text-md-sys-color-on-surface-variant group-hover:bg-md-sys-color-error-container group-hover:text-md-sys-color-on-error-container transition-colors shrink-0">
                                     {member.name.charAt(0)}
                                 </div>
@@ -396,8 +449,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                                     <p className="text-xs text-md-sys-color-error font-medium">Due: {state.currency}{member.balance}</p>
                                 </div>
                             </div>
-                            <ArrowRight size={16} className="text-md-sys-color-outline/30 group-hover:text-md-sys-color-primary transition-colors" />
+                             <button 
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    openPayModal(member, member.balance);
+                                }}
+                                className="ml-2 p-2 rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container hover:bg-md-sys-color-primary hover:text-md-sys-color-on-primary transition-colors hover:shadow-sm"
+                                title="Pay Now"
+                             >
+                                <Wallet size={16} />
                             </button>
+                            </div>
                         ))
                     ) : (
                         <div className="flex flex-col items-center justify-center py-12 text-md-sys-color-outline text-center px-4">
@@ -410,6 +472,92 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
             </div>
         </div>
       </div>
+      
+       {/* Pay Modal */}
+      {isPayModalOpen && selectedMemberForPay && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+           <div className="bg-md-sys-color-surface-container-high w-full max-w-[360px] md:max-w-[420px] rounded-md-xl p-6 shadow-md-elevation-3 flex flex-col max-h-[85vh]">
+                 <div className="mb-4">
+                     <h3 className="text-xl font-medium text-md-sys-color-on-surface">Manage Payment</h3>
+                     <p className="text-sm text-md-sys-color-on-surface-variant">{selectedMemberForPay.name} • {format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}</p>
+                 </div>
+
+                 {/* Existing Contributions List */}
+                 <div className="flex-1 overflow-y-auto mb-6 bg-md-sys-color-surface-container-low rounded-lg p-2 space-y-2 border border-md-sys-color-outline/10">
+                    <div className="flex justify-between items-center px-2 pt-1 pb-1">
+                        <p className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Payment History</p>
+                        <span className="text-[10px] text-md-sys-color-outline">{currentMemberContributions.length} records</span>
+                    </div>
+                    {currentMemberContributions.length > 0 ? (
+                        currentMemberContributions.map(c => (
+                            <div 
+                                key={c.id} 
+                                onClick={() => setExpandedPaymentId(expandedPaymentId === c.id ? null : c.id)}
+                                className={`flex flex-col p-3 bg-md-sys-color-surface rounded border transition-all cursor-pointer ${
+                                    expandedPaymentId === c.id 
+                                    ? 'border-md-sys-color-primary shadow-md-elevation-1 ring-1 ring-md-sys-color-primary' 
+                                    : 'border-md-sys-color-outline/5 hover:border-md-sys-color-primary/20'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between w-full">
+                                    <div>
+                                        <p className="font-bold text-md-sys-color-primary text-sm">+{state.currency}{c.amount}</p>
+                                        <p className="text-[10px] text-md-sys-color-on-surface-variant">{format(new Date(c.date), 'MMM d, h:mm a')}</p>
+                                    </div>
+                                    <div className={`transition-transform duration-200 ${expandedPaymentId === c.id ? 'rotate-180' : ''}`}>
+                                        <ChevronDown size={16} className="text-md-sys-color-outline/30" />
+                                    </div>
+                                </div>
+                                
+                                {expandedPaymentId === c.id && (
+                                    <div className="mt-3 pt-2 border-t border-md-sys-color-outline/10 animate-fade-in">
+                                        {c.note && <p className="text-xs text-md-sys-color-on-surface-variant mb-2 italic">"{c.note}"</p>}
+                                        <button 
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteContribution(c.id);
+                                            }}
+                                            className="w-full flex items-center justify-center gap-2 bg-md-sys-color-error-container text-md-sys-color-on-error-container text-xs font-bold py-2 rounded hover:opacity-80 transition-opacity"
+                                        >
+                                            <Trash2 size={14} /> Delete Record
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        ))
+                    ) : (
+                        <p className="text-xs text-center py-4 text-md-sys-color-outline/50 italic">No payments recorded yet.</p>
+                    )}
+                 </div>
+
+                 <form onSubmit={handlePaySubmit} className="space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Add New Payment</label>
+                        <div className="flex items-center bg-md-sys-color-surface rounded-md border border-md-sys-color-outline/10 focus-within:border-md-sys-color-primary transition-colors p-3">
+                            <span className="text-lg mr-2 font-bold text-md-sys-color-on-surface-variant">{state.currency}</span>
+                            <input 
+                                autoFocus={currentMemberContributions.length === 0} 
+                                type="number" 
+                                className="w-full bg-transparent outline-none text-xl font-medium text-md-sys-color-on-surface" 
+                                value={payAmount} 
+                                onChange={e => setPayAmount(e.target.value)} 
+                                placeholder="Enter amount"
+                            />
+                        </div>
+                    </div>
+                    
+                    <div className="flex gap-2">
+                        <button type="button" onClick={() => setPayAmount(state.monthlyTarget.toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Full ({state.currency}{state.monthlyTarget})</button>
+                        <button type="button" onClick={() => setPayAmount((state.monthlyTarget/2).toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Half</button>
+                    </div>
+                     <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-md-sys-color-outline/10">
+                        <button type="button" onClick={() => { setIsPayModalOpen(false); setSelectedMemberForPay(null); }} className="px-4 py-2 text-md-sys-color-primary font-medium hover:bg-md-sys-color-primary/10 rounded-full">Close</button>
+                        <button type="submit" disabled={!payAmount} className="px-6 py-2 bg-md-sys-color-primary text-md-sys-color-on-primary rounded-full font-medium shadow-md-elevation-1 disabled:opacity-50 disabled:shadow-none">Add</button>
+                    </div>
+                 </form>
+           </div>
+        </div>
+      )}
     </div>
   );
 };
