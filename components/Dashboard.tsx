@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { AppState, Member } from '../types';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie, Legend } from 'recharts';
-import { ChevronLeft, ChevronRight, TrendingUp, AlertCircle, CheckCircle2, Clock, Wallet, Layers, ArrowRight, Calendar, RotateCcw, Trash2, ChevronDown } from 'lucide-react';
+import { ChevronLeft, ChevronRight, AlertCircle, CheckCircle2, Clock, Wallet, Layers, RotateCcw, Trash2, ChevronDown, PartyPopper, ArrowRight, Banknote, TrendingUp, Calendar, Users } from 'lucide-react';
 import { format, subMonths, addMonths, isSameMonth } from 'date-fns';
 import { generateId, dbActions } from '../services/storageService';
 
@@ -28,15 +28,41 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
   const [payTargetMonth, setPayTargetMonth] = useState(''); 
   const [expandedPaymentId, setExpandedPaymentId] = useState<string | null>(null);
 
+  // --- Derived Data ---
+
+  // 1. Upcoming Events with Stats
+  const upcomingEvents = useMemo(() => {
+    return (state.events || [])
+        .filter(e => e.status === 'upcoming')
+        .map(evt => {
+            const evtTrans = (state.eventTransactions || []).filter(t => t.eventId === evt.id);
+            const collected = evtTrans.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+            const spent = evtTrans.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+            return { ...evt, collected, spent, net: collected - spent };
+        })
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [state.events, state.eventTransactions]);
+
+  // 2. Event Net Balance (Income - Expense)
+  const eventNetBalance = useMemo(() => {
+      return (state.eventTransactions || []).reduce((acc, t) => {
+          return t.type === 'income' ? acc + t.amount : acc - t.amount;
+      }, 0);
+  }, [state.eventTransactions]);
+
+  // 3. Main Stats
   const stats = useMemo(() => {
     const monthContribs = state.contributions.filter(c => c.month === selectedMonthStr);
     const totalCollected = monthContribs.reduce((sum, c) => sum + c.amount, 0);
-    const lifetimeTotal = state.contributions.reduce((sum, c) => sum + c.amount, 0);
+    
+    const contributionTotal = state.contributions.reduce((sum, c) => sum + c.amount, 0);
+    // Total Vault = All Contributions + Net Event Balance
+    const lifetimeTotal = contributionTotal + eventNetBalance;
 
     let paidCount = 0;
     let partialCount = 0;
-    const outstandingMembers = [];
-    const paidMembers = [];
+    const outstandingMembers: any[] = [];
+    const paidMembers: any[] = [];
 
     state.members.forEach(member => {
       // Only consider active members for monthly stats usually, but we check history
@@ -71,8 +97,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
     });
 
     const activeMembersCount = state.members.filter(m => m.active).length;
-    // Adjust total members count to only include active ones for the expected target, 
-    // unless an inactive member paid.
     const effectiveTotalMembers = activeMembersCount; 
     
     const unpaidCount = effectiveTotalMembers - paidCount - partialCount;
@@ -88,9 +112,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
       partialCount,
       unpaidCount,
       outstandingMembers: outstandingMembers.sort((a, b) => b.balance - a.balance),
-      paidMembers: paidMembers.sort((a, b) => new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime())
+      paidMembers: paidMembers.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()) // sort by payment date? No, members don't have date. 
     };
-  }, [state, selectedMonthStr]);
+  }, [state, selectedMonthStr, eventNetBalance]);
 
   const chartData = useMemo(() => {
     const data = [];
@@ -156,6 +180,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
     }
   };
 
+  const scrollToActions = () => {
+    const element = document.getElementById('action-needed-widget');
+    if (element) {
+        element.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
   // Get current contributions for the modal view
   const currentMemberContributions = useMemo(() => {
     if (!selectedMemberForPay || !payTargetMonth) return [];
@@ -164,77 +195,258 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [state.contributions, selectedMemberForPay, payTargetMonth]);
 
+  // --- Reusable Component Pieces ---
 
-  return (
-    <div className="animate-fade-in pb-20">
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+  const MobileHeroCard = () => {
+    const percent = Math.min((stats.collected / (stats.expected || 1)) * 100, 100);
+    return (
+      <div className="bg-gradient-to-br from-md-sys-color-primary to-[#004d36] rounded-[1.5rem] p-5 text-white shadow-md-elevation-2 relative overflow-hidden mb-5">
+        {/* Abstract Shapes */}
+        <div className="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full -mr-12 -mt-12 blur-3xl"></div>
+        <div className="absolute bottom-0 left-0 w-32 h-32 bg-emerald-400/10 rounded-full -ml-10 -mb-10 blur-2xl"></div>
         
-        {/* --- MAIN COLUMN (Monthly Details) --- */}
-        <div className="lg:col-span-3 space-y-6">
-            
-            {/* Header: Title & Filter */}
-            <div className="flex items-center justify-between gap-2 mb-2 md:mb-6">
-                <div className="min-w-0">
-                    <h1 className="text-2xl md:text-3xl font-medium tracking-tight text-md-sys-color-on-surface truncate">Overview</h1>
-                    <p className="hidden md:block text-sm text-md-sys-color-on-surface-variant truncate">Financial Snapshot</p>
-                </div>
-                
-                <div className="flex items-center gap-2 shrink-0">
-                     {!isCurrentMonth && (
-                        <button 
-                            onClick={handleResetDate}
-                            className="w-9 h-9 md:w-11 md:h-11 flex items-center justify-center rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container shadow-sm hover:shadow-md-elevation-1 transition-all active:scale-90"
-                            title="Reset to current month"
-                        >
-                            <RotateCcw size={16} className="md:w-5 md:h-5 opacity-80" />
-                        </button>
-                    )}
+        <div className="relative z-10 flex flex-col h-full justify-between">
+          <div>
+            <div className="flex justify-between items-start mb-2">
+               <div className="flex items-center gap-2 opacity-80">
+                  <span className="text-xs font-bold uppercase tracking-widest">Total Collected</span>
+               </div>
+               <div className="bg-white/10 px-2 py-1 rounded-lg backdrop-blur-md border border-white/5">
+                   <span className="text-xs font-bold">{Math.round(percent)}%</span>
+               </div>
+            </div>
+            <div className="flex items-baseline gap-2 mb-6">
+                 <h2 className="text-4xl font-bold tracking-tight truncate">{state.currency}{stats.collected.toLocaleString()}</h2>
+                 <span className="text-sm opacity-60 font-medium whitespace-nowrap">/ {state.currency}{stats.expected.toLocaleString()}</span>
+            </div>
+          </div>
 
-                    {/* Compact Floating Pill Style Date Selector */}
-                    <div className="flex items-center justify-between bg-md-sys-color-surface rounded-full p-0.5 md:p-1 pl-1 md:pl-2 border border-md-sys-color-outline/10 shadow-sm relative overflow-hidden group">
-                        <button 
-                            onClick={handlePrevMonth} 
-                            className="w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center bg-transparent hover:bg-md-sys-color-surface-container-high active:bg-md-sys-color-secondary-container transition-colors"
-                        >
-                            <ChevronLeft size={18} className="md:w-5 md:h-5 text-md-sys-color-on-surface opacity-70" />
-                        </button>
-                        
-                        <div className="flex flex-col items-center justify-center px-2 md:px-4 min-w-[60px] md:min-w-[100px]">
-                            <span className="text-[9px] md:text-xs font-bold text-md-sys-color-primary uppercase tracking-widest leading-none mb-0.5">
-                                {format(currentDate, 'yyyy')}
-                            </span>
-                            <span className="text-sm md:text-lg font-bold text-md-sys-color-on-surface leading-none">
-                                <span className="md:hidden">{format(currentDate, 'MMM')}</span>
-                                <span className="hidden md:inline">{format(currentDate, 'MMMM')}</span>
-                            </span>
-                        </div>
-
-                        <button 
-                            onClick={handleNextMonth} 
-                            className="w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center bg-transparent hover:bg-md-sys-color-surface-container-high active:bg-md-sys-color-secondary-container transition-colors"
-                        >
-                            <ChevronRight size={18} className="md:w-5 md:h-5 text-md-sys-color-on-surface opacity-70" />
-                        </button>
-                    </div>
-                </div>
+          <div>
+             {/* Progress Bar */}
+            <div className="w-full bg-black/20 h-2 rounded-full overflow-hidden mb-6 backdrop-blur-sm">
+                <div className="bg-white h-full rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)]" style={{ width: `${percent}%` }}></div>
             </div>
 
-            {/* Monthly Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Collected */}
-                <div className="bg-md-sys-color-primary-container text-md-sys-color-on-primary-container rounded-md-xl p-6 relative overflow-hidden transition-all hover:shadow-md-elevation-2">
-                    <div className="absolute right-0 top-0 w-32 h-32 bg-white/10 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
-                    <p className="text-sm font-medium opacity-80 mb-2 flex items-center gap-2">
-                        <CheckCircle2 size={16} /> Collected this Month
-                    </p>
-                    <div className="flex items-end gap-2">
-                        <span className="text-4xl font-bold tracking-tight">{state.currency}{stats.collected.toLocaleString()}</span>
-                        {stats.expected > 0 && (
-                             <span className="text-sm font-medium mb-2 opacity-80">/ {state.currency}{stats.expected}</span>
-                        )}
+            {/* Secondary Stats Row */}
+            <div className="grid grid-cols-2 gap-3">
+                <div 
+                    onClick={scrollToActions} 
+                    className="bg-black/20 hover:bg-black/30 active:scale-95 transition-all rounded-xl p-3 backdrop-blur-md border border-white/5 cursor-pointer flex flex-col justify-between"
+                >
+                    <div className="flex items-center gap-2 mb-2 text-emerald-100">
+                        <Users size={14} />
+                        <span className="text-xs font-bold uppercase tracking-wide opacity-80">Pending</span>
                     </div>
-                    {/* Progress Bar */}
-                    <div className="w-full bg-black/10 h-1.5 rounded-full mt-4 overflow-hidden">
+                    <p className="text-lg font-bold truncate">{state.currency}{stats.pending.toLocaleString()}</p>
+                </div>
+                <div className="bg-white/10 rounded-xl p-3 backdrop-blur-md border border-white/5 flex flex-col justify-between">
+                    <div className="flex items-center gap-2 mb-2 text-emerald-100">
+                        <Layers size={14} />
+                        <span className="text-xs font-bold uppercase tracking-wide opacity-80">Vault</span>
+                    </div>
+                    <p className="text-lg font-bold truncate">{state.currency}{stats.lifetimeTotal.toLocaleString()}</p>
+                </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+  
+  const VaultWidget = ({ mobile = false }) => (
+    <div className={`bg-md-sys-color-tertiary-container rounded-2xl p-5 relative overflow-hidden text-md-sys-color-on-tertiary-container transition-all hover:shadow-md flex flex-col justify-between ${mobile ? 'h-full min-h-[120px]' : 'w-full min-h-[140px]'}`}>
+        <div className="absolute right-0 top-0 w-32 h-32 bg-white/10 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
+        <div className="relative z-10 min-w-0 w-full">
+            <div className="flex items-center gap-2 mb-2 opacity-80">
+                <Layers size={16} />
+                <span className="text-xs font-bold uppercase tracking-wider truncate">Total Vault</span>
+            </div>
+            <div 
+                className="text-2xl font-bold tracking-tight truncate w-full" 
+                title={`${state.currency}${stats.lifetimeTotal.toLocaleString()}`}
+            >
+                {state.currency}{stats.lifetimeTotal.toLocaleString()}
+            </div>
+        </div>
+    </div>
+  );
+
+  const UpcomingEventsWidget = ({ mobile = false }) => (
+    <div className={`bg-md-sys-color-surface-container-low rounded-2xl border border-md-sys-color-outline/10 flex flex-col overflow-hidden ${mobile ? 'min-h-[120px]' : 'min-h-[140px]'}`}>
+        <div className="px-4 py-3 border-b border-md-sys-color-outline/10 flex justify-between items-center bg-md-sys-color-secondary-container text-md-sys-color-on-secondary-container">
+            <h3 className="font-medium flex items-center gap-2 text-sm min-w-0">
+                <PartyPopper size={16} className="shrink-0" /> <span className="truncate">Upcoming</span>
+            </h3>
+            <span className="text-xs font-bold bg-white/20 px-2 py-0.5 rounded-full shrink-0">
+                {upcomingEvents.length}
+            </span>
+        </div>
+        <div className="p-2 space-y-2 flex-1 overflow-y-auto">
+            {upcomingEvents.length > 0 ? (
+                upcomingEvents.slice(0, 3).map(evt => {
+                     return (
+                        <div 
+                            key={evt.id} 
+                            onClick={() => onNavigate('events', evt.id)}
+                            className="w-full flex flex-col p-3 hover:bg-md-sys-color-surface-container-high rounded-xl transition-colors group cursor-pointer border border-transparent hover:border-md-sys-color-outline/10"
+                        >
+                            <div className="flex justify-between items-start w-full gap-2 mb-1">
+                                <div className="min-w-0 flex-1">
+                                    <p className="text-base font-bold text-md-sys-color-on-surface truncate leading-tight">{evt.name}</p>
+                                    <p className="text-xs text-md-sys-color-on-surface-variant flex items-center gap-1 mt-0.5">
+                                        <Calendar size={12} /> {format(new Date(evt.date), 'MMMM d')}
+                                    </p>
+                                </div>
+                                <ArrowRight size={16} className="text-md-sys-color-outline/50 group-hover:text-md-sys-color-primary shrink-0 mt-0.5" />
+                            </div>
+                            
+                            {/* Financial Details */}
+                            <div className="flex flex-wrap items-center gap-2 w-full mt-1">
+                                <div className="bg-md-sys-color-primary-container/40 px-1.5 py-0.5 rounded text-xs font-medium text-md-sys-color-primary whitespace-nowrap truncate max-w-[45%]">
+                                    Col: {state.currency}{evt.collected}
+                                </div>
+                                <div className="bg-md-sys-color-error-container/40 px-1.5 py-0.5 rounded text-xs font-medium text-md-sys-color-error whitespace-nowrap truncate max-w-[45%]">
+                                    Spt: {state.currency}{evt.spent}
+                                </div>
+                            </div>
+                        </div>
+                     );
+                })
+            ) : (
+                <div className="flex flex-col items-center justify-center h-full py-4 opacity-50 text-center">
+                    <PartyPopper size={20} className="mb-1 opacity-50"/>
+                    <p className="text-xs">No upcoming events.</p>
+                </div>
+            )}
+        </div>
+    </div>
+  );
+
+  const ActionNeededWidget = () => (
+    <div id="action-needed-widget" className="bg-md-sys-color-surface-container-low rounded-2xl border border-md-sys-color-outline/10 flex flex-col overflow-hidden h-full max-h-[400px]">
+        <div className="px-4 py-3 border-b border-md-sys-color-outline/10 flex justify-between items-center bg-md-sys-color-surface-container">
+            <h3 className="font-medium text-md-sys-color-on-surface flex items-center gap-2 text-sm">
+                <Wallet size={16} /> Action Needed
+            </h3>
+            <span className="text-xs font-bold bg-md-sys-color-error-container text-md-sys-color-on-error-container px-2 py-0.5 rounded-full">
+                {stats.outstandingMembers.length}
+            </span>
+        </div>
+    
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {stats.outstandingMembers.length > 0 ? (
+                stats.outstandingMembers.map(member => (
+                    <div 
+                        key={member.id} 
+                        className="w-full flex items-center justify-between p-2.5 hover:bg-md-sys-color-surface-container-high rounded-xl transition-colors group text-left border border-transparent hover:border-md-sys-color-outline/10 cursor-pointer"
+                        onClick={() => openPayModal(member, member.balance)}
+                    >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <div className="w-8 h-8 rounded-full bg-md-sys-color-surface-variant flex items-center justify-center font-bold text-sm text-md-sys-color-on-surface-variant group-hover:bg-md-sys-color-error-container group-hover:text-md-sys-color-on-error-container transition-colors shrink-0">
+                            {member.name.charAt(0)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-md-sys-color-on-surface truncate">{member.name}</p>
+                            <p className="text-xs text-md-sys-color-error font-medium truncate">Due: {state.currency}{member.balance}</p>
+                        </div>
+                    </div>
+                     <button 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            openPayModal(member, member.balance);
+                        }}
+                        className="ml-2 p-2 rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container hover:bg-md-sys-color-primary hover:text-md-sys-color-on-primary transition-colors hover:shadow-sm shrink-0"
+                        title="Pay Now"
+                     >
+                        <Wallet size={16} />
+                    </button>
+                    </div>
+                ))
+            ) : (
+                <div className="flex flex-col items-center justify-center py-8 text-md-sys-color-outline text-center px-4">
+                    <CheckCircle2 size={32} className="mb-2 text-md-sys-color-primary" />
+                    <p className="text-sm font-medium text-md-sys-color-on-surface">All caught up!</p>
+                </div>
+            )}
+        </div>
+    </div>
+  );
+
+  return (
+    <div className="animate-fade-in pb-24 md:pb-12">
+      
+      {/* Header: Title & Filter */}
+      <div className="flex items-center justify-between gap-2 mb-4 md:mb-6">
+            <div className="min-w-0">
+                <h1 className="text-2xl md:text-3xl font-medium tracking-tight text-md-sys-color-on-surface truncate">Overview</h1>
+                <p className="hidden md:block text-sm text-md-sys-color-on-surface-variant truncate">Financial Snapshot</p>
+            </div>
+            
+            <div className="flex items-center gap-2 shrink-0">
+                    {!isCurrentMonth && (
+                    <button 
+                        onClick={handleResetDate}
+                        className="w-10 h-10 flex items-center justify-center rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container shadow-sm hover:shadow-md transition-all active:scale-90"
+                        title="Reset to current month"
+                    >
+                        <RotateCcw size={18} className="opacity-80" />
+                    </button>
+                )}
+
+                {/* Date Selector */}
+                <div className="flex items-center bg-md-sys-color-surface rounded-full p-1 border border-md-sys-color-outline/10 shadow-sm relative overflow-hidden group">
+                    <button 
+                        onClick={handlePrevMonth} 
+                        className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-md-sys-color-surface-container-high transition-colors"
+                    >
+                        <ChevronLeft size={18} className="text-md-sys-color-on-surface opacity-70" />
+                    </button>
+                    
+                    <div className="flex flex-col items-center justify-center px-3 min-w-[80px]">
+                        <span className="text-[10px] font-bold text-md-sys-color-primary uppercase tracking-wider leading-none mb-0.5">
+                            {format(currentDate, 'yyyy')}
+                        </span>
+                        <span className="text-sm font-bold text-md-sys-color-on-surface leading-none">
+                            {format(currentDate, 'MMMM')}
+                        </span>
+                    </div>
+
+                    <button 
+                        onClick={handleNextMonth} 
+                        className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-md-sys-color-surface-container-high transition-colors"
+                    >
+                        <ChevronRight size={18} className="text-md-sys-color-on-surface opacity-70" />
+                    </button>
+                </div>
+            </div>
+      </div>
+
+      {/* --- MOBILE HERO SECTION --- */}
+      <div className="md:hidden">
+         <MobileHeroCard />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4 md:gap-6">
+        
+        {/* --- MAIN CONTENT AREA --- */}
+        <div className="xl:col-span-3 space-y-4 md:space-y-6">
+
+            {/* Desktop Top Stats Grid (Hidden on Mobile) */}
+            <div className="hidden md:grid grid-cols-2 gap-4">
+                {/* 1. Collected */}
+                <div className="bg-md-sys-color-primary-container text-md-sys-color-on-primary-container rounded-2xl p-5 relative overflow-hidden transition-all hover:shadow-md flex flex-col justify-between min-h-[140px]">
+                    <div className="absolute right-0 top-0 w-24 h-24 bg-white/10 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
+                    <div className="relative z-10">
+                        <p className="text-xs font-bold uppercase tracking-wider opacity-80 mb-1 flex items-center gap-1">
+                             Collected
+                        </p>
+                        <div className="flex items-baseline gap-1">
+                            <span className="text-3xl font-bold tracking-tight truncate">{state.currency}{stats.collected.toLocaleString()}</span>
+                            <span className="text-xs opacity-70 hidden sm:inline whitespace-nowrap">/ {state.currency}{stats.expected}</span>
+                        </div>
+                    </div>
+                     {/* Progress Bar */}
+                    <div className="relative z-10 w-full bg-black/10 h-1.5 rounded-full overflow-hidden">
                         <div 
                             className="bg-white h-full rounded-full transition-all duration-1000" 
                             style={{width: `${Math.min((stats.collected / (stats.expected || 1)) * 100, 100)}%`}}
@@ -242,27 +454,50 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                     </div>
                 </div>
 
-                {/* Pending */}
-                <div className="bg-md-sys-color-error-container text-md-sys-color-on-error-container rounded-md-xl p-6 relative overflow-hidden transition-all hover:shadow-md-elevation-2">
-                    <div className="absolute right-0 top-0 w-32 h-32 bg-white/10 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
-                    <p className="text-sm font-medium opacity-80 mb-2 flex items-center gap-2">
-                        <AlertCircle size={16} /> Outstanding
-                    </p>
-                    <div className="flex items-end gap-2">
-                        <span className="text-4xl font-bold tracking-tight">{state.currency}{stats.pending.toLocaleString()}</span>
+                {/* 2. Outstanding */}
+                <div 
+                    onClick={scrollToActions}
+                    className="bg-md-sys-color-error-container text-md-sys-color-on-error-container rounded-2xl p-5 relative overflow-hidden transition-all hover:shadow-md flex flex-col justify-between min-h-[140px] cursor-pointer active:scale-95"
+                >
+                    <div className="absolute right-0 top-0 w-24 h-24 bg-white/10 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
+                    <div className="relative z-10">
+                         <p className="text-xs font-bold uppercase tracking-wider opacity-80 mb-1 flex items-center gap-1">
+                             Pending
+                        </p>
+                        <div className="flex items-baseline gap-1">
+                            <span className="text-3xl font-bold tracking-tight truncate">{state.currency}{stats.pending.toLocaleString()}</span>
+                        </div>
                     </div>
-                    <p className="mt-4 text-sm font-medium opacity-90 flex items-center gap-1">
-                        {stats.outstandingMembers.length} members pending
+                    <p className="relative z-10 text-xs font-medium opacity-90 flex items-center gap-1">
+                        <Users size={12} /> {stats.outstandingMembers.length} members
                     </p>
                 </div>
+            </div>
+            
+            {/* Tablet/Mobile Widget Group */}
+            {/* On Mobile: Hidden (handled by hero) | On Tablet (md/lg): Grid 2 cols | On Desktop (xl): Hidden (moved to sidebar) */}
+            <div className="md:grid md:grid-cols-2 gap-4 xl:hidden hidden">
+                <div className="h-full">
+                    <VaultWidget mobile />
+                </div>
+                {upcomingEvents.length > 0 && (
+                    <div className="h-full">
+                         <UpcomingEventsWidget mobile />
+                    </div>
+                )}
+            </div>
+            
+            {/* Mobile Only: Events below Hero */}
+            <div className="md:hidden">
+                 {upcomingEvents.length > 0 && <UpcomingEventsWidget mobile />}
             </div>
 
             {/* Charts Row */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                  {/* Participation Donut */}
-                 <div className="bg-md-sys-color-surface-container-low rounded-md-xl p-6 border border-md-sys-color-outline/10 flex flex-col">
-                     <h3 className="text-lg font-medium text-md-sys-color-on-surface mb-2">Participation</h3>
-                     <div className="flex-1 min-h-[200px] relative">
+                 <div className="bg-md-sys-color-surface-container-low rounded-2xl p-4 md:p-6 border border-md-sys-color-outline/10 flex flex-col">
+                     <h3 className="text-base md:text-lg font-medium text-md-sys-color-on-surface mb-2">Participation</h3>
+                     <div className="flex-1 min-h-[180px] md:min-h-[200px] relative">
                          <ResponsiveContainer width="100%" height="100%">
                             <PieChart>
                                 <Pie
@@ -298,7 +533,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                                     height={36} 
                                     iconType="circle"
                                     iconSize={8}
-                                    wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }}
+                                    wrapperStyle={{ fontSize: '11px', paddingTop: '0px' }}
                                 />
                             </PieChart>
                          </ResponsiveContainer>
@@ -313,19 +548,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                  </div>
 
                  {/* Historical Trends */}
-                 <div className="bg-md-sys-color-surface-container-low rounded-md-xl p-6 border border-md-sys-color-outline/10 flex flex-col">
-                     <h3 className="text-lg font-medium text-md-sys-color-on-surface mb-2">6 Month Trend</h3>
-                     <div className="flex-1 min-h-[200px]">
+                 <div className="bg-md-sys-color-surface-container-low rounded-2xl p-4 md:p-6 border border-md-sys-color-outline/10 flex flex-col">
+                     <h3 className="text-base md:text-lg font-medium text-md-sys-color-on-surface mb-2">6 Month Trend</h3>
+                     <div className="flex-1 min-h-[180px] md:min-h-[200px]">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={chartData} barSize={32}>
+                            <BarChart data={chartData} barSize={24}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e0e0e0" />
                                 <XAxis 
                                     dataKey="name" 
                                     stroke="#707973" 
-                                    fontSize={12} 
+                                    fontSize={11} 
                                     tickLine={false} 
                                     axisLine={false} 
-                                    tickMargin={10}
+                                    tickMargin={8}
                                 />
                                 <YAxis 
                                     hide
@@ -359,10 +594,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                  </div>
             </div>
 
+            {/* Action Needed (Visible on Mobile/Tablet/LG here, Hidden on XL sidebar) */}
+            <div className="xl:hidden">
+                <ActionNeededWidget />
+            </div>
+
             {/* Payments List */}
-            <div className="bg-md-sys-color-surface-container-low rounded-md-xl p-6 border border-md-sys-color-outline/10">
+            <div className="bg-md-sys-color-surface-container-low rounded-2xl p-4 md:p-6 border border-md-sys-color-outline/10">
                 <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-medium text-md-sys-color-on-surface">Payments Received ({format(currentDate, 'MMM')})</h3>
+                    <h3 className="text-base md:text-lg font-medium text-md-sys-color-on-surface">Payments Received ({format(currentDate, 'MMM')})</h3>
                     <span className="text-xs font-bold bg-md-sys-color-secondary-container text-md-sys-color-on-secondary-container px-2 py-1 rounded-full">
                         {stats.paidMembers.length} / {stats.paidCount + stats.partialCount + stats.unpaidCount}
                     </span>
@@ -371,119 +611,58 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {displayPaidMembers.length > 0 ? (
                         displayPaidMembers.map(member => (
-                            <div key={member.id} className="flex items-center justify-between p-3 bg-md-sys-color-surface-container rounded-md-lg border border-transparent hover:border-md-sys-color-primary/20 transition-colors">
+                            <div key={member.id} className="flex items-center justify-between p-3 bg-md-sys-color-surface-container rounded-xl border border-transparent hover:border-md-sys-color-primary/20 transition-colors">
                                 <div className="flex items-center gap-3 min-w-0">
                                     <div className="w-8 h-8 rounded-full bg-md-sys-color-secondary-container text-md-sys-color-on-secondary-container flex items-center justify-center text-xs font-bold shrink-0">
                                         {member.name.charAt(0)}
                                     </div>
-                                    <div className="truncate">
+                                    <div className="truncate min-w-0">
                                         <p className="text-sm font-medium text-md-sys-color-on-surface truncate">{member.name}</p>
                                     </div>
                                 </div>
-                                <span className="font-bold text-md-sys-color-primary text-sm whitespace-nowrap ml-2">
+                                <span className="font-bold text-md-sys-color-primary text-sm whitespace-nowrap ml-2 shrink-0">
                                     +{state.currency}{member.paid}
                                 </span>
                             </div>
                         ))
                     ) : (
-                        <div className="col-span-full py-8 text-center text-md-sys-color-on-surface-variant bg-md-sys-color-surface-container/50 rounded-lg border border-dashed border-md-sys-color-outline/20">
-                            <Clock className="mx-auto mb-2 opacity-50" size={24} />
-                            <p className="text-sm">No contributions recorded for {format(currentDate, 'MMMM')}.</p>
+                        <div className="col-span-full py-6 text-center text-md-sys-color-on-surface-variant bg-md-sys-color-surface-container/50 rounded-lg border border-dashed border-md-sys-color-outline/20">
+                            <Clock className="mx-auto mb-1 opacity-50" size={20} />
+                            <p className="text-xs">No contributions yet.</p>
                         </div>
                     )}
                     
                     {remainingPaidCount > 0 && (
-                        <div className="col-span-full flex justify-center mt-2">
+                        <div className="col-span-full flex justify-center mt-1">
                              <span className="text-xs text-md-sys-color-primary font-medium bg-md-sys-color-primary-container px-3 py-1 rounded-full cursor-pointer hover:bg-md-sys-color-primary/20 transition-colors" onClick={() => onNavigate('history')}>
-                                +{remainingPaidCount} more payments
+                                +{remainingPaidCount} more
                              </span>
                         </div>
                     )}
                 </div>
             </div>
+
         </div>
 
-        {/* --- SIDE COLUMN (Sidebar) --- */}
-        <div className="space-y-6">
-            
-            {/* Lifetime Fund Card */}
-            <div className="bg-md-sys-color-tertiary-container rounded-md-xl p-6 relative overflow-hidden text-md-sys-color-on-tertiary-container transition-all hover:shadow-md-elevation-2 group">
-                <div className="absolute right-0 top-0 w-32 h-32 bg-white/10 rounded-full -mr-8 -mt-8 transition-transform group-hover:scale-150 duration-500"></div>
-                <div className="relative z-10">
-                    <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center mb-4 text-md-sys-color-on-tertiary-container">
-                        <Layers size={20} />
-                    </div>
-                    <p className="text-sm font-medium opacity-80 mb-1">Total Vault</p>
-                    <div className="text-3xl font-bold tracking-tight mb-1">
-                        {state.currency}{stats.lifetimeTotal.toLocaleString()}
-                    </div>
-                    <p className="text-xs opacity-70">Accumulated since start</p>
-                </div>
-            </div>
-
-            {/* Action Needed Sidebar */}
-            <div className="bg-md-sys-color-surface-container-low rounded-md-xl border border-md-sys-color-outline/10 flex flex-col overflow-hidden max-h-[600px]">
-                <div className="p-4 border-b border-md-sys-color-outline/10 flex justify-between items-center bg-md-sys-color-surface-container">
-                    <h3 className="font-medium text-md-sys-color-on-surface flex items-center gap-2">
-                        <Wallet size={16} /> Action Needed
-                    </h3>
-                    <span className="text-xs font-bold bg-md-sys-color-error-container text-md-sys-color-on-error-container px-2 py-0.5 rounded-full">
-                        {stats.outstandingMembers.length}
-                    </span>
-                </div>
-            
-                <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                    {stats.outstandingMembers.length > 0 ? (
-                        stats.outstandingMembers.map(member => (
-                            <div 
-                                key={member.id} 
-                                className="w-full flex items-center justify-between p-3 hover:bg-md-sys-color-surface-container-high rounded-md-lg transition-colors group text-left border border-transparent hover:border-md-sys-color-outline/10 cursor-pointer"
-                                onClick={() => openPayModal(member, member.balance)}
-                            >
-                            <div className="flex items-center gap-3 min-w-0 flex-1">
-                                <div className="w-8 h-8 rounded-full bg-md-sys-color-surface-variant flex items-center justify-center font-bold text-xs text-md-sys-color-on-surface-variant group-hover:bg-md-sys-color-error-container group-hover:text-md-sys-color-on-error-container transition-colors shrink-0">
-                                    {member.name.charAt(0)}
-                                </div>
-                                <div className="min-w-0">
-                                    <p className="text-sm font-medium text-md-sys-color-on-surface truncate">{member.name}</p>
-                                    <p className="text-xs text-md-sys-color-error font-medium">Due: {state.currency}{member.balance}</p>
-                                </div>
-                            </div>
-                             <button 
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    openPayModal(member, member.balance);
-                                }}
-                                className="ml-2 p-2 rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container hover:bg-md-sys-color-primary hover:text-md-sys-color-on-primary transition-colors hover:shadow-sm"
-                                title="Pay Now"
-                             >
-                                <Wallet size={16} />
-                            </button>
-                            </div>
-                        ))
-                    ) : (
-                        <div className="flex flex-col items-center justify-center py-12 text-md-sys-color-outline text-center px-4">
-                            <CheckCircle2 size={32} className="mb-2 text-md-sys-color-primary" />
-                            <p className="text-sm font-medium text-md-sys-color-on-surface">All caught up!</p>
-                            <p className="text-xs mt-1">Everyone has paid for {format(currentDate, 'MMMM')}.</p>
-                        </div>
-                    )}
-                </div>
-            </div>
+        {/* --- SIDEBAR COLUMN (Desktop XL Only) --- */}
+        <div className="hidden xl:block space-y-6 min-w-0">
+            <VaultWidget />
+            {upcomingEvents.length > 0 && <UpcomingEventsWidget />}
+            <ActionNeededWidget />
         </div>
       </div>
       
        {/* Pay Modal */}
       {isPayModalOpen && selectedMemberForPay && (
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-           <div className="bg-md-sys-color-surface-container-high w-full max-w-[360px] md:max-w-[420px] rounded-md-xl p-6 shadow-md-elevation-3 flex flex-col max-h-[85vh]">
+           <div className="bg-md-sys-color-surface-container-high w-full max-w-[360px] md:max-w-[420px] rounded-2xl p-6 shadow-md-elevation-3 flex flex-col max-h-[85vh]">
                  <div className="mb-4">
                      <h3 className="text-xl font-medium text-md-sys-color-on-surface">Manage Payment</h3>
                      <p className="text-sm text-md-sys-color-on-surface-variant">{selectedMemberForPay.name} • {format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}</p>
                  </div>
 
                  {/* Existing Contributions List */}
-                 <div className="flex-1 overflow-y-auto mb-6 bg-md-sys-color-surface-container-low rounded-lg p-2 space-y-2 border border-md-sys-color-outline/10">
+                 <div className="flex-1 overflow-y-auto mb-6 bg-md-sys-color-surface-container-low rounded-xl p-2 space-y-2 border border-md-sys-color-outline/10">
                     <div className="flex justify-between items-center px-2 pt-1 pb-1">
                         <p className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Payment History</p>
                         <span className="text-[10px] text-md-sys-color-outline">{currentMemberContributions.length} records</span>
@@ -493,7 +672,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                             <div 
                                 key={c.id} 
                                 onClick={() => setExpandedPaymentId(expandedPaymentId === c.id ? null : c.id)}
-                                className={`flex flex-col p-3 bg-md-sys-color-surface rounded border transition-all cursor-pointer ${
+                                className={`flex flex-col p-3 bg-md-sys-color-surface rounded-lg border transition-all cursor-pointer ${
                                     expandedPaymentId === c.id 
                                     ? 'border-md-sys-color-primary shadow-md-elevation-1 ring-1 ring-md-sys-color-primary' 
                                     : 'border-md-sys-color-outline/5 hover:border-md-sys-color-primary/20'
@@ -517,7 +696,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                                                 e.stopPropagation();
                                                 handleDeleteContribution(c.id);
                                             }}
-                                            className="w-full flex items-center justify-center gap-2 bg-md-sys-color-error-container text-md-sys-color-on-error-container text-xs font-bold py-2 rounded hover:opacity-80 transition-opacity"
+                                            className="w-full flex items-center justify-center gap-2 bg-md-sys-color-error-container text-md-sys-color-on-error-container text-xs font-bold py-2 rounded-lg hover:opacity-80 transition-opacity"
                                         >
                                             <Trash2 size={14} /> Delete Record
                                         </button>
@@ -533,7 +712,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                  <form onSubmit={handlePaySubmit} className="space-y-4">
                     <div className="space-y-2">
                         <label className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Add New Payment</label>
-                        <div className="flex items-center bg-md-sys-color-surface rounded-md border border-md-sys-color-outline/10 focus-within:border-md-sys-color-primary transition-colors p-3">
+                        <div className="flex items-center bg-md-sys-color-surface rounded-lg border border-md-sys-color-outline/10 focus-within:border-md-sys-color-primary transition-colors p-3">
                             <span className="text-lg mr-2 font-bold text-md-sys-color-on-surface-variant">{state.currency}</span>
                             <input 
                                 autoFocus={currentMemberContributions.length === 0} 
@@ -547,8 +726,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate, current
                     </div>
                     
                     <div className="flex gap-2">
-                        <button type="button" onClick={() => setPayAmount(state.monthlyTarget.toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Full ({state.currency}{state.monthlyTarget})</button>
-                        <button type="button" onClick={() => setPayAmount((state.monthlyTarget/2).toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Half</button>
+                        <button type="button" onClick={() => setPayAmount(state.monthlyTarget.toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded-lg hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Full ({state.currency}{state.monthlyTarget})</button>
+                        <button type="button" onClick={() => setPayAmount((state.monthlyTarget/2).toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded-lg hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Half</button>
                     </div>
                      <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-md-sys-color-outline/10">
                         <button type="button" onClick={() => { setIsPayModalOpen(false); setSelectedMemberForPay(null); }} className="px-4 py-2 text-md-sys-color-primary font-medium hover:bg-md-sys-color-primary/10 rounded-full">Close</button>

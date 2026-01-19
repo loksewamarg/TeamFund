@@ -1,49 +1,73 @@
-import { AppState, Member, Contribution } from '../types';
-import { db } from './firebaseConfig';
-import { ref, onValue, set, update, remove, get, child } from 'firebase/database';
+import { AppState, Member, Contribution, Event, EventTransaction } from '../types';
 
-// Default seed data to use if DB is completely empty (rarely used with Firebase as it starts null)
+const STORAGE_KEY = 'teamfund_state';
+
 const DEFAULT_STATE: AppState = {
   members: [],
   contributions: [],
   monthlyTarget: 100,
   currency: '₹',
+  events: [],
+  eventTransactions: []
 };
 
-// --- Subscription Logic ---
+// --- Local State Management ---
+
+let listeners: ((state: AppState) => void)[] = [];
 
 /**
- * Listens to Firebase Realtime Database changes.
+ * Load state from LocalStorage
+ */
+const loadState = (): AppState => {
+  try {
+    const serialized = localStorage.getItem(STORAGE_KEY);
+    if (!serialized) return DEFAULT_STATE;
+    const parsed = JSON.parse(serialized);
+    // Ensure all keys exist in case of partial data or schema updates
+    return { ...DEFAULT_STATE, ...parsed };
+  } catch (e) {
+    console.error("Failed to load state", e);
+    return DEFAULT_STATE;
+  }
+};
+
+/**
+ * Save state to LocalStorage and notify listeners
+ */
+const saveState = (state: AppState) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    notifyListeners(state);
+  } catch (e) {
+    console.error("Failed to save state", e);
+  }
+};
+
+const notifyListeners = (state: AppState) => {
+  listeners.forEach(l => l(state));
+};
+
+/**
+ * Subscribes to changes in the AppState.
+ * Also listens to the 'storage' event for cross-tab synchronization.
  */
 export const subscribeToAppState = (onUpdate: (state: AppState) => void) => {
-  const dbRef = ref(db, '/');
+  listeners.push(onUpdate);
   
-  const unsubscribe = onValue(dbRef, (snapshot) => {
-    const val = snapshot.val();
-    
-    if (val) {
-        // Convert Firebase Objects (keyed by ID) back to Arrays for the App
-        const members = val.members ? Object.values(val.members) as Member[] : [];
-        const contributions = val.contributions ? Object.values(val.contributions) as Contribution[] : [];
-        const monthlyTarget = val.settings?.monthlyTarget ?? 100;
-        const currency = val.settings?.currency ?? '₹';
-        
-        onUpdate({
-            members,
-            contributions,
-            monthlyTarget,
-            currency
-        });
-    } else {
-        // DB is empty, initialize or just return defaults
-        onUpdate(DEFAULT_STATE);
+  // Initial data load
+  onUpdate(loadState());
+
+  // Handle cross-tab updates
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY) {
+      onUpdate(loadState());
     }
-  }, (error) => {
-    console.error("Firebase read failed", error);
-  });
+  };
+  window.addEventListener('storage', handleStorageEvent);
 
   return () => {
-    unsubscribe();
+    listeners = listeners.filter(l => l !== onUpdate);
+    window.removeEventListener('storage', handleStorageEvent);
   };
 };
 
@@ -92,52 +116,97 @@ const parseCSV = (text: string): string[][] => {
 
 export const dbActions = {
   addMember: async (currentMembers: Member[], newMember: Member) => {
-    await set(ref(db, `members/${newMember.id}`), newMember);
+    const state = loadState();
+    state.members.push(newMember);
+    saveState(state);
   },
 
   updateMember: async (currentMembers: Member[], updatedMember: Member) => {
-    await update(ref(db, `members/${updatedMember.id}`), updatedMember);
+    const state = loadState();
+    const index = state.members.findIndex(m => m.id === updatedMember.id);
+    if (index !== -1) {
+      state.members[index] = updatedMember;
+      saveState(state);
+    }
   },
 
   removeMember: async (currentMembers: Member[], currentContributions: Contribution[], memberId: string) => {
-    const updates: any = {};
-    // Remove the member
-    updates[`members/${memberId}`] = null;
-    
-    // Remove all contributions linked to this member
-    currentContributions.forEach(c => {
-        if (c.memberId === memberId) {
-            updates[`contributions/${c.id}`] = null;
-        }
-    });
-    
-    await update(ref(db), updates);
+    const state = loadState();
+    // Remove member
+    state.members = state.members.filter(m => m.id !== memberId);
+    // Remove linked contributions
+    state.contributions = state.contributions.filter(c => c.memberId !== memberId);
+    saveState(state);
   },
 
   addContribution: async (currentContributions: Contribution[], newContribution: Contribution) => {
-    await set(ref(db, `contributions/${newContribution.id}`), newContribution);
+    const state = loadState();
+    state.contributions.push(newContribution);
+    saveState(state);
   },
 
   removeContribution: async (contributionId: string) => {
-    await remove(ref(db, `contributions/${contributionId}`));
+    const state = loadState();
+    state.contributions = state.contributions.filter(c => c.id !== contributionId);
+    saveState(state);
   },
 
   updateSettings: async (settings: { monthlyTarget: number, currency: string }) => {
-    await update(ref(db, 'settings'), settings);
+    const state = loadState();
+    state.monthlyTarget = settings.monthlyTarget;
+    state.currency = settings.currency;
+    saveState(state);
+  },
+
+  // --- Event Actions ---
+  
+  addEvent: async (newEvent: Event) => {
+    const state = loadState();
+    // Initialize events array if it doesn't exist (migration)
+    if (!state.events) state.events = [];
+    state.events.push(newEvent);
+    saveState(state);
+  },
+
+  updateEvent: async (updatedEvent: Event) => {
+    const state = loadState();
+    if (!state.events) return;
+    const index = state.events.findIndex(e => e.id === updatedEvent.id);
+    if (index !== -1) {
+      state.events[index] = updatedEvent;
+      saveState(state);
+    }
+  },
+
+  deleteEvent: async (eventId: string) => {
+    const state = loadState();
+    if (!state.events) return;
+    state.events = state.events.filter(e => e.id !== eventId);
+    // Also remove transactions associated with this event
+    if (state.eventTransactions) {
+      state.eventTransactions = state.eventTransactions.filter(t => t.eventId !== eventId);
+    }
+    saveState(state);
+  },
+
+  addEventTransaction: async (transaction: EventTransaction) => {
+    const state = loadState();
+    if (!state.eventTransactions) state.eventTransactions = [];
+    state.eventTransactions.push(transaction);
+    saveState(state);
+  },
+
+  removeEventTransaction: async (transactionId: string) => {
+    const state = loadState();
+    if (!state.eventTransactions) return;
+    state.eventTransactions = state.eventTransactions.filter(t => t.id !== transactionId);
+    saveState(state);
   },
 
   importFromCSV: async (csvContent: string): Promise<{ success: boolean; message: string }> => {
     try {
-      // 1. Fetch current state to check for existing members
-      const snapshot = await get(child(ref(db), '/'));
-      const val = snapshot.val() || {};
+      const state = loadState();
       
-      const currentMembersMap = val.members || {};
-      const currentContributionsMap = val.contributions || {};
-      
-      const membersArray: Member[] = Object.values(currentMembersMap);
-      const contributionsArray: Contribution[] = Object.values(currentContributionsMap);
-
       const rows = parseCSV(csvContent);
       if (rows.length < 2) return { success: false, message: "CSV is empty or missing headers." };
 
@@ -155,7 +224,6 @@ export const dbActions = {
           if (/^\d{4}-\d{2}$/.test(h)) dateColumns.push({ index: idx, month: h });
       });
 
-      const updates: any = {};
       let membersAdded = 0;
       let membersUpdated = 0;
 
@@ -171,7 +239,7 @@ export const dbActions = {
           const active = statusVal === 'active';
 
           // Check if member exists
-          let member = membersArray.find(m => m.name.toLowerCase() === name.toLowerCase());
+          let member = state.members.find(m => m.name.toLowerCase() === name.toLowerCase());
           
           if (member) {
               // Update Member
@@ -181,10 +249,7 @@ export const dbActions = {
               if (address && member.address !== address) { member.address = address; wasUpdated = true; }
               if (member.active !== active) { member.active = active; wasUpdated = true; }
               
-              if (wasUpdated) {
-                  updates[`members/${member.id}`] = member;
-                  membersUpdated++;
-              }
+              if (wasUpdated) membersUpdated++;
           } else {
               // New Member
               member = {
@@ -196,9 +261,7 @@ export const dbActions = {
                   active,
                   joinedAt: new Date().toISOString()
               };
-              updates[`members/${member.id}`] = member;
-              // Add to local array for subsequent rows/contributions check
-              membersArray.push(member);
+              state.members.push(member);
               membersAdded++;
           }
 
@@ -208,11 +271,11 @@ export const dbActions = {
               const amount = amountStr ? parseFloat(amountStr.replace(/[^0-9.]/g, '')) : 0;
               
               if (amount > 0 && member) {
-                  const existingContrib = contributionsArray.find(c => c.memberId === member!.id && c.month === col.month);
+                  const existingContrib = state.contributions.find(c => c.memberId === member!.id && c.month === col.month);
                   
                   if (existingContrib) {
                       if (existingContrib.amount !== amount) {
-                          updates[`contributions/${existingContrib.id}/amount`] = amount;
+                          existingContrib.amount = amount;
                       }
                   } else {
                       const newId = generateId();
@@ -224,14 +287,13 @@ export const dbActions = {
                           month: col.month,
                           note: 'Imported via CSV'
                       };
-                      updates[`contributions/${newId}`] = contrib;
-                      contributionsArray.push(contrib);
+                      state.contributions.push(contrib);
                   }
               }
           });
       }
 
-      await update(ref(db), updates);
+      saveState(state);
       return { 
           success: true, 
           message: `Import Successful: ${membersAdded} members added, ${membersUpdated} updated.` 

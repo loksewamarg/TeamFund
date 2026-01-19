@@ -18,14 +18,35 @@ export interface Contribution {
   note?: string;
 }
 
+export interface Event {
+  id: string;
+  name: string;
+  date: string; // ISO date
+  description?: string;
+  status: 'upcoming' | 'completed';
+  budget?: number; // Estimated budget
+}
+
+export interface EventTransaction {
+  id: string;
+  eventId: string;
+  type: 'income' | 'expense';
+  amount: number;
+  date: string;
+  description: string;
+  memberId?: string; // Optional, only if type is income and linked to a member
+}
+
 export interface AppState {
   members: Member[];
   contributions: Contribution[];
   monthlyTarget: number;
   currency: string;
+  events: Event[];
+  eventTransactions: EventTransaction[];
 }
 
-export type ViewState = 'dashboard' | 'tracker' | 'members' | 'history' | 'settings' | 'report';
+export type ViewState = 'dashboard' | 'tracker' | 'members' | 'history' | 'settings' | 'report' | 'events';
 
 export interface MonthlyStats {
   totalCollected: number;

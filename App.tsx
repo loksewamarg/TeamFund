@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
-import { LayoutDashboard, Users, History as HistoryIcon, Settings as SettingsIcon, CalendarCheck, PieChart, Loader2 } from 'lucide-react';
+import { LayoutDashboard, Users, History as HistoryIcon, Settings as SettingsIcon, CalendarCheck, PieChart, Loader2, PartyPopper, Menu, X } from 'lucide-react';
 import { AppState, ViewState, Contribution, Member } from './types';
 import { subscribeToAppState, dbActions } from './services/storageService';
 
@@ -11,6 +11,7 @@ const Tracker = lazy(() => import('./components/Tracker').then(module => ({ defa
 const History = lazy(() => import('./components/History').then(module => ({ default: module.History })));
 const Report = lazy(() => import('./components/Report').then(module => ({ default: module.Report })));
 const Settings = lazy(() => import('./components/Settings').then(module => ({ default: module.Settings })));
+const Events = lazy(() => import('./components/Events').then(module => ({ default: module.Events })));
 
 // NavItem extracted to prevent re-creation on every render
 const NavItem = ({ 
@@ -33,7 +34,7 @@ const NavItem = ({
     return (
       <button
         onClick={() => onClick(view)}
-        className={`flex items-center gap-3 px-6 py-4 rounded-full w-full transition-colors ${
+        className={`flex items-center gap-3 px-6 py-4 rounded-full w-full transition-colors text-left ${
           isActive 
             ? 'bg-md-sys-color-secondary-container text-md-sys-color-on-secondary-container font-bold' 
             : 'text-md-sys-color-on-surface-variant hover:bg-md-sys-color-surface-container-high'
@@ -45,7 +46,7 @@ const NavItem = ({
     );
   }
 
-  // Mobile Bottom Bar Style
+  // Mobile Bottom Bar Style (Icon + Label)
   return (
     <button
       onClick={() => onClick(view)}
@@ -68,7 +69,9 @@ const NavItem = ({
 const App: React.FC = () => {
   const [state, setState] = useState<AppState | null>(null);
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
+  const [viewParam, setViewParam] = useState<string | undefined>(undefined);
   const [globalDate, setGlobalDate] = useState(new Date());
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Subscribe to Realtime Database on mount
   useEffect(() => {
@@ -108,8 +111,10 @@ const App: React.FC = () => {
     }
   };
 
-  const handleNavigate = (view: ViewState) => {
+  const handleNavigate = (view: ViewState, param?: string) => {
     setCurrentView(view);
+    setViewParam(param);
+    setIsMobileMenuOpen(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -147,6 +152,8 @@ const App: React.FC = () => {
           onUpdateMember={updateMember}
           onRemoveMember={removeMember}
         />;
+      case 'events':
+        return <Events state={state} initialEventId={viewParam} />;
       case 'history':
         return <History state={state} />;
       case 'report':
@@ -181,6 +188,7 @@ const App: React.FC = () => {
         <nav className="space-y-2 flex-1">
           <NavItem view="dashboard" icon={LayoutDashboard} label="Dashboard" isActive={currentView === 'dashboard'} onClick={handleNavigate} />
           <NavItem view="tracker" icon={CalendarCheck} label="Tracker" isActive={currentView === 'tracker'} onClick={handleNavigate} />
+          <NavItem view="events" icon={PartyPopper} label="Events" isActive={currentView === 'events'} onClick={handleNavigate} />
           <NavItem view="members" icon={Users} label="Members" isActive={currentView === 'members'} onClick={handleNavigate} />
           <NavItem view="report" icon={PieChart} label="Reports" isActive={currentView === 'report'} onClick={handleNavigate} />
           <NavItem view="history" icon={HistoryIcon} label="History" isActive={currentView === 'history'} onClick={handleNavigate} />
@@ -201,6 +209,12 @@ const App: React.FC = () => {
       {/* --- MOBILE TOP BAR --- */}
       <div className="md:hidden flex items-center justify-between px-4 py-3 bg-md-sys-color-surface sticky top-0 z-30 shadow-sm">
          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-2 -ml-2 rounded-full hover:bg-md-sys-color-surface-variant/50 transition-colors"
+            >
+              <Menu size={24} className="text-md-sys-color-on-surface" />
+            </button>
             <div className="w-8 h-8 rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container flex items-center justify-center font-bold text-sm">
                {state.currency}
             </div>
@@ -208,6 +222,43 @@ const App: React.FC = () => {
          </div>
          <div className="w-8 h-8 rounded-full bg-md-sys-color-surface-variant flex items-center justify-center text-md-sys-color-on-surface-variant font-bold text-xs">A</div>
       </div>
+
+      {/* --- MOBILE DRAWER OVERLAY --- */}
+      {isMobileMenuOpen && (
+         <div className="fixed inset-0 z-50 md:hidden flex">
+            {/* Backdrop */}
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
+            
+            {/* Drawer Content */}
+            <div className="relative bg-md-sys-color-surface-container-low w-[80%] max-w-[300px] h-full shadow-xl flex flex-col p-4 animate-in slide-in-from-left duration-200">
+               <div className="flex justify-between items-center mb-8 px-2">
+                  <div className="flex items-center gap-3 text-md-sys-color-primary">
+                      <div className="w-10 h-10 rounded-xl bg-md-sys-color-primary-container text-md-sys-color-on-primary-container flex items-center justify-center text-xl font-bold">
+                        {state.currency}
+                      </div>
+                      <h1 className="text-xl font-bold tracking-tight text-md-sys-color-on-surface">TeamFund</h1>
+                  </div>
+                  <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 rounded-full hover:bg-md-sys-color-outline/10">
+                    <X size={24} />
+                  </button>
+               </div>
+
+               <nav className="space-y-1 flex-1 overflow-y-auto">
+                  <NavItem view="dashboard" icon={LayoutDashboard} label="Dashboard" isActive={currentView === 'dashboard'} onClick={handleNavigate} />
+                  <NavItem view="tracker" icon={CalendarCheck} label="Tracker" isActive={currentView === 'tracker'} onClick={handleNavigate} />
+                  <NavItem view="events" icon={PartyPopper} label="Events" isActive={currentView === 'events'} onClick={handleNavigate} />
+                  <NavItem view="members" icon={Users} label="Members" isActive={currentView === 'members'} onClick={handleNavigate} />
+                  <NavItem view="report" icon={PieChart} label="Reports" isActive={currentView === 'report'} onClick={handleNavigate} />
+                  <NavItem view="history" icon={HistoryIcon} label="History" isActive={currentView === 'history'} onClick={handleNavigate} />
+                  <NavItem view="settings" icon={SettingsIcon} label="Settings" isActive={currentView === 'settings'} onClick={handleNavigate} />
+               </nav>
+
+               <div className="mt-4 pt-4 border-t border-md-sys-color-outline/10">
+                   <p className="text-xs text-center text-md-sys-color-outline">v2.1 • TeamFund</p>
+               </div>
+            </div>
+         </div>
+      )}
 
       {/* --- MAIN CONTENT --- */}
       <main className="flex-1 md:ml-80 p-4 pb-24 md:p-8 max-w-7xl mx-auto w-full">
@@ -225,9 +276,8 @@ const App: React.FC = () => {
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-md-sys-color-surface-container shadow-[0_-2px_10px_rgba(0,0,0,0.05)] h-20 flex items-center z-40 px-2 justify-around">
         <NavItem view="dashboard" icon={LayoutDashboard} label="Home" mobile isActive={currentView === 'dashboard'} onClick={handleNavigate} />
         <NavItem view="tracker" icon={CalendarCheck} label="Track" mobile isActive={currentView === 'tracker'} onClick={handleNavigate} />
+        <NavItem view="events" icon={PartyPopper} label="Events" mobile isActive={currentView === 'events'} onClick={handleNavigate} />
         <NavItem view="members" icon={Users} label="Team" mobile isActive={currentView === 'members'} onClick={handleNavigate} />
-        <NavItem view="report" icon={PieChart} label="Report" mobile isActive={currentView === 'report'} onClick={handleNavigate} />
-        <NavItem view="settings" icon={SettingsIcon} label="Config" mobile isActive={currentView === 'settings'} onClick={handleNavigate} />
       </div>
 
     </div>
