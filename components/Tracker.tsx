@@ -1,7 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { AppState, Member } from '../types';
-import { format, subMonths, addMonths, isSameMonth } from 'date-fns';
-import { ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Clock, Search, Wallet, RotateCcw, Filter, Trash2, ChevronDown } from 'lucide-react';
+import { format } from 'date-fns';
+import { ChevronLeft, ChevronRight, Search, AlertTriangle } from 'lucide-react';
 import { generateId, dbActions } from '../services/storageService';
 
 interface TrackerProps {
@@ -11,416 +11,292 @@ interface TrackerProps {
   onDateChange: (date: Date) => void;
 }
 
-type TabFilter = 'all' | 'paid' | 'pending';
-
 export const Tracker: React.FC<TrackerProps> = ({ state, onAddContribution, currentDate, onDateChange }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeTab, setActiveTab] = useState<TabFilter>('all');
+  const [selectedYear, setSelectedYear] = useState(currentDate.getFullYear());
+  const [showLeftShadow, setShowLeftShadow] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   
-  // Payment Modal State
-  const [isPayModalOpen, setIsPayModalOpen] = useState(false);
-  const [selectedMemberForPay, setSelectedMemberForPay] = useState<Member | null>(null);
-  const [payAmount, setPayAmount] = useState('');
-  const [payTargetMonth, setPayTargetMonth] = useState(''); 
-  const [expandedPaymentId, setExpandedPaymentId] = useState<string | null>(null);
+  // Confirmation Modal State
+  const [confirmClear, setConfirmClear] = useState<{ member: Member, monthKey: string } | null>(null);
 
-  const handlePrevMonth = () => onDateChange(subMonths(currentDate, 1));
-  const handleNextMonth = () => onDateChange(addMonths(currentDate, 1));
-  const handleResetDate = () => onDateChange(new Date());
+  const handlePrevYear = () => setSelectedYear(prev => prev - 1);
+  const handleNextYear = () => setSelectedYear(prev => prev + 1);
 
-  const selectedMonthStr = format(currentDate, 'yyyy-MM');
-  const isCurrentMonth = isSameMonth(currentDate, new Date());
+  // Scroll Shadow Logic
+  const handleScroll = () => {
+      if (scrollContainerRef.current) {
+          setShowLeftShadow(scrollContainerRef.current.scrollLeft > 0);
+      }
+  };
 
-  const trackerData = useMemo(() => {
-    const monthContribs = state.contributions.filter(c => c.month === selectedMonthStr);
-    
-    // We include members if they are active OR if they are inactive but made a contribution in this specific month
-    const relevantMembers = state.members.filter(m => {
-        const paidThisMonth = monthContribs.some(c => c.memberId === m.id);
-        return m.active || paidThisMonth;
+  useEffect(() => {
+      const el = scrollContainerRef.current;
+      if (el) {
+          el.addEventListener('scroll', handleScroll);
+          handleScroll();
+          return () => el.removeEventListener('scroll', handleScroll);
+      }
+  }, [state.members]);
+
+  // --- Data Logic ---
+
+  const yearMonths = useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+        const monthNum = i + 1;
+        const monthStr = `${selectedYear}-${monthNum.toString().padStart(2, '0')}`;
+        const date = new Date(selectedYear, i, 1);
+        return {
+            key: monthStr,
+            label: format(date, 'MMM'),
+            fullLabel: format(date, 'MMMM'),
+            isFuture: date > new Date() && date.getMonth() !== new Date().getMonth()
+        };
     });
+  }, [selectedYear]);
 
-    const data = relevantMembers.map(member => {
-      const paid = monthContribs
-        .filter(c => c.memberId === member.id)
+  const filteredMembers = useMemo(() => {
+    return state.members.filter(m => 
+        (m.active || state.contributions.some(c => c.memberId === m.id && c.month.startsWith(selectedYear.toString()))) &&
+        m.name.toLowerCase().includes(searchTerm.toLowerCase())
+    ).sort((a, b) => a.name.localeCompare(b.name));
+  }, [state.members, state.contributions, selectedYear, searchTerm]);
+
+  // Aggregations
+  const { columnTotals, grandTotal } = useMemo(() => {
+      const totals: Record<string, number> = {};
+      let totalCollected = 0;
+
+      yearMonths.forEach(m => totals[m.key] = 0);
+      
+      filteredMembers.forEach(member => {
+          yearMonths.forEach(month => {
+             const paid = state.contributions
+                .filter(c => c.memberId === member.id && c.month === month.key)
+                .reduce((sum, c) => sum + c.amount, 0);
+             totals[month.key] += paid;
+             totalCollected += paid;
+          });
+      });
+      
+      return { 
+          columnTotals: totals, 
+          grandTotal: totalCollected,
+      };
+  }, [filteredMembers, state.contributions, yearMonths]);
+
+
+  // --- Click Handlers ---
+
+  const handleCellClick = (member: Member, monthKey: string) => {
+      const paid = state.contributions
+        .filter(c => c.memberId === member.id && c.month === monthKey)
         .reduce((sum, c) => sum + c.amount, 0);
       
-      const target = state.monthlyTarget;
-      const remaining = Math.max(target - paid, 0);
+      const isPaid = paid >= state.monthlyTarget;
       
-      let status: 'paid' | 'partial' | 'unpaid' = 'unpaid';
-      if (paid >= target) status = 'paid';
-      else if (paid > 0) status = 'partial';
-
-      return {
-        ...member,
-        paid,
-        remaining,
-        status
-      };
-    });
-
-    // Filter by search term AND Active Tab
-    return data.filter(m => {
-        const matchesSearch = m.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                              m.job.toLowerCase().includes(searchTerm.toLowerCase());
-        
-        let matchesTab = true;
-        if (activeTab === 'paid') matchesTab = m.status === 'paid';
-        if (activeTab === 'pending') matchesTab = m.status !== 'paid';
-
-        return matchesSearch && matchesTab;
-    }).sort((a, b) => {
-        // Sort: Unpaid/Partial first, then Paid. Within that, alphabetical.
-        const score = (status: string) => status === 'paid' ? 2 : status === 'partial' ? 1 : 0;
-        return score(a.status) - score(b.status) || a.name.localeCompare(b.name);
-    });
-
-  }, [state, selectedMonthStr, searchTerm, activeTab]);
-
-  // Calculate stats based on ALL relevant members for this month (ignoring search filters for summary)
-  const stats = useMemo(() => {
-    const monthContribs = state.contributions.filter(c => c.month === selectedMonthStr);
-    const allMembers = state.members.filter(m => m.active || monthContribs.some(c => c.memberId === m.id));
-    
-    const paidCount = allMembers.filter(m => {
-        const paid = monthContribs.filter(c => c.memberId === m.id).reduce((sum, c) => sum + c.amount, 0);
-        return paid >= state.monthlyTarget;
-    }).length;
-
-    return { 
-        total: allMembers.length, 
-        paid: paidCount, 
-        pending: allMembers.length - paidCount 
-    };
-  }, [state, selectedMonthStr]);
-
-  const openPayModal = (member: Member, remaining: number) => {
-      setSelectedMemberForPay(member);
-      setPayAmount(remaining > 0 ? remaining.toString() : '');
-      setPayTargetMonth(selectedMonthStr);
-      setExpandedPaymentId(null);
-      setIsPayModalOpen(true);
+      if (isPaid) {
+          // Fully paid -> ask to clear
+          setConfirmClear({ member, monthKey });
+      } else {
+          // Unpaid or Partial -> make fully paid
+          const remaining = state.monthlyTarget - paid;
+          if (remaining > 0) {
+            onAddContribution({
+                id: generateId(),
+                memberId: member.id,
+                amount: remaining,
+                date: new Date().toISOString(),
+                month: monthKey,
+                note: `Marked Paid`
+            });
+          }
+      }
   };
 
-  const handlePaySubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedMemberForPay || !payAmount) return;
-    
-    const recordDate = new Date(); 
-    
-    onAddContribution({
-      id: generateId(),
-      memberId: selectedMemberForPay.id,
-      amount: Number(payAmount),
-      date: recordDate.toISOString(),
-      month: payTargetMonth,
-      note: `Payment for ${format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}`
-    });
-    
-    setPayAmount('');
-    setIsPayModalOpen(false); 
+  const handleConfirmClearAction = () => {
+      if (!confirmClear) return;
+      const { member, monthKey } = confirmClear;
+      const toDelete = state.contributions.filter(c => c.memberId === member.id && c.month === monthKey);
+      toDelete.forEach(c => dbActions.removeContribution(c.id));
+      setConfirmClear(null);
   };
 
-  const handleDeleteContribution = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this payment record?')) {
-        dbActions.removeContribution(id);
-    }
-  };
 
-  // Get current contributions for the modal view
-  const currentMemberContributions = useMemo(() => {
-    if (!selectedMemberForPay || !payTargetMonth) return [];
-    return state.contributions
-      .filter(c => c.memberId === selectedMemberForPay.id && c.month === payTargetMonth)
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [state.contributions, selectedMemberForPay, payTargetMonth]);
+  // --- Renders ---
 
   return (
-    <div className="space-y-6 pb-24 md:pb-0 animate-fade-in">
-       {/* Header: Title & Filter */}
-       <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-                <h1 className="text-2xl md:text-3xl font-medium tracking-tight text-md-sys-color-on-surface truncate">Tracker</h1>
-                <p className="hidden md:block text-sm text-md-sys-color-on-surface-variant truncate">Manage contributions</p>
-            </div>
-        
-            <div className="flex items-center gap-2 shrink-0">
-                {!isCurrentMonth && (
-                    <button 
-                        onClick={handleResetDate}
-                        className="w-9 h-9 md:w-11 md:h-11 flex items-center justify-center rounded-full bg-md-sys-color-primary-container text-md-sys-color-on-primary-container shadow-sm hover:shadow-md-elevation-1 transition-all active:scale-90"
-                        title="Reset to current month"
-                    >
-                        <RotateCcw size={16} className="md:w-5 md:h-5 opacity-80" />
-                    </button>
-                )}
+    <div className="flex flex-col h-[calc(100vh-80px)] md:h-[calc(100vh-64px)] pb-4 md:pb-0 animate-fade-in gap-3 bg-white md:bg-transparent">
+       
+       {/* 1. TOP CONTROL */}
+       <div className="shrink-0 flex items-center justify-between gap-3 px-1 pt-2 md:pt-0">
+           <div className="relative flex-1 max-w-[200px] md:max-w-[240px] group">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Search size={16} className="text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
+                </div>
+                <input 
+                    type="text" 
+                    className="block w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-lg text-sm leading-5 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-all shadow-sm"
+                    placeholder="Search..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                />
+           </div>
 
-                {/* Compact Floating Pill Style Date Selector */}
-                <div className="flex items-center justify-between bg-md-sys-color-surface rounded-full p-0.5 md:p-1 pl-1 md:pl-2 border border-md-sys-color-outline/10 shadow-sm relative overflow-hidden group">
-                    <button 
-                        onClick={handlePrevMonth} 
-                        className="w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center bg-transparent hover:bg-md-sys-color-surface-container-high active:bg-md-sys-color-secondary-container transition-colors"
-                    >
-                        <ChevronLeft size={18} className="md:w-5 md:h-5 text-md-sys-color-on-surface opacity-70" />
-                    </button>
+           <div className="shrink-0 flex items-center bg-white rounded-lg border border-slate-200 shadow-sm p-0.5">
+                <button onClick={handlePrevYear} className="p-2 hover:bg-slate-100 rounded-md text-slate-600 transition-colors">
+                    <ChevronLeft size={18} />
+                </button>
+                <span className="px-2 md:px-4 text-sm font-bold text-slate-800 min-w-[4rem] text-center select-none tabular-nums">
+                    {selectedYear}
+                </span>
+                <button onClick={handleNextYear} className="p-2 hover:bg-slate-100 rounded-md text-slate-600 transition-colors">
+                    <ChevronRight size={18} />
+                </button>
+           </div>
+       </div>
+
+       {/* 2. DATA SPREADSHEET */}
+       <div className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col overflow-hidden relative">
+            <div 
+                ref={scrollContainerRef}
+                className="flex-1 overflow-auto relative overscroll-x-contain"
+            >
+                <table className="w-full border-separate border-spacing-0">
+                    <thead className="sticky top-0 z-30 bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider shadow-sm">
+                        <tr>
+                            <th className={`sticky left-0 z-40 bg-slate-50 px-3 py-3 text-left border-b border-r border-slate-200 min-w-[120px] sm:min-w-[140px] lg:min-w-[200px] transition-shadow duration-200 ${showLeftShadow ? 'shadow-[4px_0_12px_-4px_rgba(0,0,0,0.15)]' : ''}`}>
+                                Member
+                            </th>
+                            {yearMonths.map(m => (
+                                <th key={m.key} className="px-1 py-3 text-center border-b border-r border-slate-100 min-w-[50px] sm:min-w-[60px] lg:min-w-[80px]">
+                                    <span className="md:hidden">{m.label.charAt(0)}</span>
+                                    <span className="hidden md:inline lg:hidden">{m.label}</span>
+                                    <span className="hidden lg:inline">{m.label}</span>
+                                </th>
+                            ))}
+                            <th className="px-2 py-3 text-center border-b border-l border-slate-200 min-w-[70px] sm:min-w-[80px] bg-slate-50/50">
+                                Total
+                            </th>
+                        </tr>
+                    </thead>
                     
-                    <div className="flex flex-col items-center justify-center px-2 md:px-4 min-w-[60px] md:min-w-[100px]">
-                        <span className="text-[9px] md:text-xs font-bold text-md-sys-color-primary uppercase tracking-widest leading-none mb-0.5">
-                            {format(currentDate, 'yyyy')}
-                        </span>
-                        <span className="text-sm md:text-lg font-bold text-md-sys-color-on-surface leading-none">
-                            <span className="md:hidden">{format(currentDate, 'MMM')}</span>
-                            <span className="hidden md:inline">{format(currentDate, 'MMMM')}</span>
-                        </span>
-                    </div>
+                    <tbody className="bg-white">
+                        {filteredMembers.map((member) => {
+                            let rowTotal = 0;
+                            return (
+                                <tr key={member.id} className="group hover:bg-slate-50/80 transition-colors">
+                                    <td className={`sticky left-0 z-20 bg-white group-hover:bg-slate-50 px-3 py-2 border-b border-r border-slate-200 transition-shadow duration-200 ${showLeftShadow ? 'shadow-[4px_0_12px_-4px_rgba(0,0,0,0.05)]' : ''}`}>
+                                        <div className="flex items-center gap-2.5">
+                                            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${member.active ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-400'}`}>
+                                                {member.name.charAt(0)}
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className={`text-sm font-medium truncate leading-tight ${member.active ? 'text-slate-800' : 'text-slate-400'}`}>{member.name}</p>
+                                            </div>
+                                        </div>
+                                    </td>
 
-                    <button 
-                        onClick={handleNextMonth} 
-                        className="w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center bg-transparent hover:bg-md-sys-color-surface-container-high active:bg-md-sys-color-secondary-container transition-colors"
-                    >
-                        <ChevronRight size={18} className="md:w-5 md:h-5 text-md-sys-color-on-surface opacity-70" />
-                    </button>
+                                    {yearMonths.map(month => {
+                                            const paid = state.contributions
+                                            .filter(c => c.memberId === member.id && c.month === month.key)
+                                            .reduce((sum, c) => sum + c.amount, 0);
+                                            rowTotal += paid;
+
+                                            const isPaid = paid >= state.monthlyTarget;
+                                            const isPartial = paid > 0 && !isPaid;
+                                            const isFuture = month.isFuture;
+
+                                            let cellClass = "bg-transparent";
+                                            let content = <div className="w-1.5 h-1.5 rounded-full bg-slate-100 mx-auto group-hover:bg-slate-200"></div>;
+
+                                            if (isPaid) {
+                                                cellClass = "bg-emerald-50 text-emerald-700 font-bold border-emerald-100";
+                                                content = <span className="text-[10px] sm:text-[11px]">{state.currency}{paid}</span>;
+                                            } else if (isPartial) {
+                                                cellClass = "bg-amber-50 text-amber-700 font-medium border-amber-100";
+                                                content = <span className="text-[10px] sm:text-[11px]">{state.currency}{paid}</span>;
+                                            } else if (isFuture) {
+                                                content = <span className="opacity-0">-</span>
+                                            }
+
+                                            return (
+                                                <td 
+                                                    key={month.key} 
+                                                    onClick={() => handleCellClick(member, month.key)}
+                                                    className="p-1 border-b border-r border-slate-100 h-11 cursor-pointer align-middle select-none"
+                                                >
+                                                    <div className={`w-full h-full flex items-center justify-center rounded border border-transparent transition-all active:scale-95 hover:border-indigo-200 ${cellClass}`}>
+                                                        {content}
+                                                    </div>
+                                                </td>
+                                            )
+                                    })}
+
+                                    <td className="px-2 py-2 text-center border-b border-l border-slate-200 font-bold text-slate-700 text-sm">
+                                        {state.currency}{rowTotal.toLocaleString()}
+                                    </td>
+                                </tr>
+                            );
+                        })}
+
+                        <tr className="bg-slate-50 font-bold text-xs sticky bottom-0 z-30 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                             <td className={`sticky left-0 z-40 bg-slate-50 px-3 py-3 border-t border-r border-slate-200 text-slate-500 uppercase tracking-wider transition-shadow duration-200 ${showLeftShadow ? 'shadow-[4px_0_12px_-4px_rgba(0,0,0,0.15)]' : ''}`}>
+                                 Total
+                             </td>
+                             {yearMonths.map(m => (
+                                 <td key={m.key} className="px-1 py-3 text-center border-t border-r border-slate-200 text-emerald-700">
+                                     {columnTotals[m.key] > 0 ? (
+                                         <span className="text-[10px] sm:text-xs">{state.currency}{columnTotals[m.key]}</span>
+                                     ) : <span className="text-slate-300">-</span>}
+                                 </td>
+                             ))}
+                             <td className="px-2 py-3 text-center border-t border-l border-slate-200 text-emerald-700">
+                                 {state.currency}{grandTotal.toLocaleString()}
+                             </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+       </div>
+
+       {/* 3. CONFIRMATION POPUP */}
+       {confirmClear && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-xs sm:max-w-sm rounded-2xl shadow-2xl p-6 animate-in zoom-in-95 duration-200">
+                    <div className="flex items-center gap-3 mb-4 text-amber-600">
+                        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                            <AlertTriangle size={20} />
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-800">Unpaid?</h3>
+                    </div>
+                    
+                    <p className="text-slate-600 text-sm mb-6 leading-relaxed">
+                        Are you sure you want to mark 
+                        <strong className="text-slate-900"> {confirmClear.member.name} </strong> 
+                        as unpaid for 
+                        <strong className="text-slate-900"> {format(new Date(confirmClear.monthKey + '-01'), 'MMMM')}</strong>?
+                        <br/>
+                        <span className="text-xs text-slate-500 mt-2 block">This will remove the payment record.</span>
+                    </p>
+
+                    <div className="flex gap-3">
+                        <button 
+                            onClick={() => setConfirmClear(null)} 
+                            className="flex-1 py-2.5 rounded-xl border border-slate-200 font-bold text-slate-600 hover:bg-slate-50 transition-colors text-sm"
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            onClick={handleConfirmClearAction} 
+                            className="flex-1 py-2.5 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 transition-colors shadow-lg shadow-red-200 text-sm"
+                        >
+                            Yes, Unpaid
+                        </button>
+                    </div>
                 </div>
             </div>
-      </div>
-
-      {/* Filters and Tabs Row */}
-      <div className="flex flex-col md:flex-row gap-4 items-center">
-        {/* Search Input */}
-        <div className="relative flex-1 w-full">
-            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-md-sys-color-on-surface-variant" />
-            <input 
-                type="text" 
-                placeholder="Search member..." 
-                className="w-full bg-md-sys-color-surface-container-low rounded-xl pl-10 pr-4 py-3 outline-none focus:ring-1 focus:ring-md-sys-color-primary transition-all border border-md-sys-color-outline/10"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-            />
-        </div>
-
-        {/* Segmented Control Tabs with Counts */}
-        <div className="flex bg-md-sys-color-surface-container-low p-1 rounded-xl border border-md-sys-color-outline/10 w-full md:w-auto overflow-x-auto">
-            <button
-                onClick={() => setActiveTab('all')}
-                className={`flex-1 md:flex-none px-4 lg:px-6 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center justify-center gap-2 ${
-                    activeTab === 'all' 
-                    ? 'bg-md-sys-color-surface shadow-md-elevation-1 text-md-sys-color-on-surface' 
-                    : 'text-md-sys-color-on-surface-variant hover:bg-md-sys-color-surface-container-high'
-                }`}
-            >
-                All 
-                <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === 'all' ? 'bg-md-sys-color-surface-variant' : 'bg-black/5'}`}>
-                    {stats.total}
-                </span>
-            </button>
-            <button
-                onClick={() => setActiveTab('paid')}
-                className={`flex-1 md:flex-none px-4 lg:px-6 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center justify-center gap-2 ${
-                    activeTab === 'paid' 
-                    ? 'bg-md-sys-color-primary-container text-md-sys-color-on-primary-container shadow-sm' 
-                    : 'text-md-sys-color-on-surface-variant hover:bg-md-sys-color-surface-container-high'
-                }`}
-            >
-                Paid
-                <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === 'paid' ? 'bg-white/20' : 'bg-black/5'}`}>
-                    {stats.paid}
-                </span>
-            </button>
-            <button
-                onClick={() => setActiveTab('pending')}
-                className={`flex-1 md:flex-none px-4 lg:px-6 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center justify-center gap-2 ${
-                    activeTab === 'pending' 
-                    ? 'bg-md-sys-color-error-container text-md-sys-color-on-error-container shadow-sm' 
-                    : 'text-md-sys-color-on-surface-variant hover:bg-md-sys-color-surface-container-high'
-                }`}
-            >
-                Pending
-                <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === 'pending' ? 'bg-white/20' : 'bg-black/5'}`}>
-                    {stats.pending}
-                </span>
-            </button>
-        </div>
-      </div>
-
-      {/* Tracker List */}
-      <div className="bg-md-sys-color-surface-container-low rounded-xl border border-md-sys-color-outline/10 overflow-hidden min-h-[300px]">
-         <div className="hidden md:grid grid-cols-4 gap-4 p-4 bg-md-sys-color-surface-container text-xs font-medium text-md-sys-color-on-surface-variant border-b border-md-sys-color-outline/10">
-            <div className="col-span-2">MEMBER</div>
-            <div className="text-right">STATUS</div>
-            <div className="text-right">AMOUNT / ACTION</div>
-         </div>
-
-         <div className="divide-y divide-md-sys-color-outline/10">
-             {trackerData.length > 0 ? (
-                 trackerData.map(member => (
-                    <div 
-                        key={member.id} 
-                        onClick={() => openPayModal(member, member.remaining)}
-                        className="p-4 md:grid md:grid-cols-4 md:gap-4 flex flex-col gap-3 items-center md:items-center hover:bg-md-sys-color-surface-container-high transition-colors cursor-pointer group"
-                    >
-                        
-                        {/* Member Info */}
-                        <div className="w-full md:col-span-2 flex items-center gap-3">
-                            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${
-                                member.status === 'paid' 
-                                    ? 'bg-md-sys-color-primary-container text-md-sys-color-on-primary-container'
-                                    : 'bg-md-sys-color-surface-variant text-md-sys-color-on-surface-variant'
-                            }`}>
-                                {member.name.charAt(0)}
-                            </div>
-                            <div>
-                                <p className="font-medium text-md-sys-color-on-surface flex items-center gap-2">
-                                    {member.name}
-                                    {!member.active && (
-                                        <span className="text-[10px] bg-md-sys-color-outline/20 text-md-sys-color-on-surface-variant px-1.5 py-0.5 rounded">Inactive</span>
-                                    )}
-                                </p>
-                                <p className="text-xs text-md-sys-color-on-surface-variant">{member.job}</p>
-                            </div>
-                        </div>
-
-                        {/* Status */}
-                        <div className="w-full md:text-right flex md:justify-end items-center justify-between">
-                            <span className="md:hidden text-xs text-md-sys-color-on-surface-variant font-medium">STATUS</span>
-                            {member.status === 'paid' && (
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-md-sys-color-primary-container text-md-sys-color-on-primary-container">
-                                    <CheckCircle2 size={14} /> Paid
-                                </span>
-                            )}
-                            {member.status === 'partial' && (
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-md-sys-color-tertiary-container text-md-sys-color-on-tertiary-container">
-                                    <Clock size={14} /> Partial
-                                </span>
-                            )}
-                            {member.status === 'unpaid' && (
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-md-sys-color-error-container text-md-sys-color-on-error-container">
-                                    <AlertCircle size={14} /> Pending
-                                </span>
-                            )}
-                        </div>
-
-                        {/* Amount & Action */}
-                        <div className="w-full md:text-right flex md:justify-end items-center justify-between">
-                            <span className="md:hidden text-xs text-md-sys-color-on-surface-variant font-medium">BALANCE</span>
-                            <div className="flex items-center gap-4">
-                                <div className="text-right">
-                                    <p className="font-bold text-md-sys-color-on-surface">{state.currency}{member.paid}</p>
-                                    {member.remaining > 0 ? (
-                                        <p className="text-xs text-md-sys-color-error">Due: {state.currency}{member.remaining}</p>
-                                    ) : (
-                                        <p className="text-xs text-md-sys-color-primary">Settled</p>
-                                    )}
-                                </div>
-                                {member.status !== 'paid' && (
-                                    <button 
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            openPayModal(member, member.remaining);
-                                        }}
-                                        className="px-4 py-2 rounded-full text-sm font-bold shadow-sm transition-all flex items-center gap-2 bg-md-sys-color-primary text-md-sys-color-on-primary hover:bg-md-sys-color-primary/90 hover:shadow-md-elevation-1 active:scale-95"
-                                    >
-                                        <Wallet size={16} /> Pay
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                 ))
-             ) : (
-                 <div className="flex flex-col items-center justify-center py-12 text-md-sys-color-outline text-center opacity-60">
-                     <Filter size={32} className="mb-2" />
-                     <p className="text-sm">No members found matching filter.</p>
-                 </div>
-             )}
-         </div>
-      </div>
-
-      {/* Pay Modal */}
-      {isPayModalOpen && selectedMemberForPay && (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-           <div className="bg-md-sys-color-surface-container-high w-full max-w-[360px] md:max-w-[420px] rounded-md-xl p-6 shadow-md-elevation-3 flex flex-col max-h-[85vh]">
-                 <div className="mb-4">
-                     <h3 className="text-xl font-medium text-md-sys-color-on-surface">Manage Payment</h3>
-                     <p className="text-sm text-md-sys-color-on-surface-variant">{selectedMemberForPay.name} • {format(new Date(payTargetMonth + '-01'), 'MMMM yyyy')}</p>
-                 </div>
-
-                 {/* Existing Contributions List */}
-                 <div className="flex-1 overflow-y-auto mb-6 bg-md-sys-color-surface-container-low rounded-lg p-2 space-y-2 border border-md-sys-color-outline/10">
-                    <div className="flex justify-between items-center px-2 pt-1 pb-1">
-                        <p className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Payment History</p>
-                        <span className="text-[10px] text-md-sys-color-outline">{currentMemberContributions.length} records</span>
-                    </div>
-                    {currentMemberContributions.length > 0 ? (
-                        currentMemberContributions.map(c => (
-                            <div 
-                                key={c.id} 
-                                onClick={() => setExpandedPaymentId(expandedPaymentId === c.id ? null : c.id)}
-                                className={`flex flex-col p-3 bg-md-sys-color-surface rounded border transition-all cursor-pointer ${
-                                    expandedPaymentId === c.id 
-                                    ? 'border-md-sys-color-primary shadow-md-elevation-1 ring-1 ring-md-sys-color-primary' 
-                                    : 'border-md-sys-color-outline/5 hover:border-md-sys-color-primary/20'
-                                }`}
-                            >
-                                <div className="flex items-center justify-between w-full">
-                                    <div>
-                                        <p className="font-bold text-md-sys-color-primary text-sm">+{state.currency}{c.amount}</p>
-                                        <p className="text-[10px] text-md-sys-color-on-surface-variant">{format(new Date(c.date), 'MMM d, h:mm a')}</p>
-                                    </div>
-                                    <div className={`transition-transform duration-200 ${expandedPaymentId === c.id ? 'rotate-180' : ''}`}>
-                                        <ChevronDown size={16} className="text-md-sys-color-outline/30" />
-                                    </div>
-                                </div>
-                                
-                                {expandedPaymentId === c.id && (
-                                    <div className="mt-3 pt-2 border-t border-md-sys-color-outline/10 animate-fade-in">
-                                        {c.note && <p className="text-xs text-md-sys-color-on-surface-variant mb-2 italic">"{c.note}"</p>}
-                                        <button 
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteContribution(c.id);
-                                            }}
-                                            className="w-full flex items-center justify-center gap-2 bg-md-sys-color-error-container text-md-sys-color-on-error-container text-xs font-bold py-2 rounded hover:opacity-80 transition-opacity"
-                                        >
-                                            <Trash2 size={14} /> Delete Record
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-                        ))
-                    ) : (
-                        <p className="text-xs text-center py-4 text-md-sys-color-outline/50 italic">No payments recorded yet.</p>
-                    )}
-                 </div>
-
-                 <form onSubmit={handlePaySubmit} className="space-y-4">
-                    <div className="space-y-2">
-                        <label className="text-xs font-bold text-md-sys-color-on-surface-variant uppercase">Add New Payment</label>
-                        <div className="flex items-center bg-md-sys-color-surface rounded-md border border-md-sys-color-outline/10 focus-within:border-md-sys-color-primary transition-colors p-3">
-                            <span className="text-lg mr-2 font-bold text-md-sys-color-on-surface-variant">{state.currency}</span>
-                            <input 
-                                autoFocus={currentMemberContributions.length === 0} 
-                                type="number" 
-                                className="w-full bg-transparent outline-none text-xl font-medium text-md-sys-color-on-surface" 
-                                value={payAmount} 
-                                onChange={e => setPayAmount(e.target.value)} 
-                                placeholder="Enter amount"
-                            />
-                        </div>
-                    </div>
-                    
-                    <div className="flex gap-2">
-                        <button type="button" onClick={() => setPayAmount(state.monthlyTarget.toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Full ({state.currency}{state.monthlyTarget})</button>
-                        <button type="button" onClick={() => setPayAmount((state.monthlyTarget/2).toString())} className="flex-1 text-xs border border-md-sys-color-outline/20 px-2 py-2 rounded hover:bg-md-sys-color-surface-container-low text-md-sys-color-on-surface-variant">Half</button>
-                    </div>
-                     <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-md-sys-color-outline/10">
-                        <button type="button" onClick={() => { setIsPayModalOpen(false); setSelectedMemberForPay(null); }} className="px-4 py-2 text-md-sys-color-primary font-medium hover:bg-md-sys-color-primary/10 rounded-full">Close</button>
-                        <button type="submit" disabled={!payAmount} className="px-6 py-2 bg-md-sys-color-primary text-md-sys-color-on-primary rounded-full font-medium shadow-md-elevation-1 disabled:opacity-50 disabled:shadow-none">Add</button>
-                    </div>
-                 </form>
-           </div>
-        </div>
-      )}
+       )}
     </div>
   );
 };
