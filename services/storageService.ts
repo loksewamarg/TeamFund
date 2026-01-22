@@ -1,4 +1,6 @@
 import { AppState, Member, Contribution, Event, EventTransaction } from '../types';
+import { db } from './firebaseConfig';
+import { ref, set, onValue } from 'firebase/database';
 
 const STORAGE_KEY = 'teamfund_state';
 
@@ -15,16 +17,39 @@ const DEFAULT_STATE: AppState = {
 
 let listeners: ((state: AppState) => void)[] = [];
 
+// Helper to sanitize arrays (handle Firebase sparse arrays/objects)
+const sanitizeArray = <T>(data: any): T[] => {
+  if (!data) return [];
+  if (Array.isArray(data)) {
+    // Filter out nulls/undefined which happen with sparse arrays in Firebase
+    return data.filter(item => item !== null && item !== undefined);
+  }
+  // If Firebase returns an object (integer keys) instead of an array
+  if (typeof data === 'object') {
+    return Object.values(data);
+  }
+  return [];
+};
+
 /**
- * Load state from LocalStorage
+ * Load state from LocalStorage with robust type checking
  */
 const loadState = (): AppState => {
   try {
     const serialized = localStorage.getItem(STORAGE_KEY);
     if (!serialized) return DEFAULT_STATE;
     const parsed = JSON.parse(serialized);
-    // Ensure all keys exist in case of partial data or schema updates
-    return { ...DEFAULT_STATE, ...parsed };
+    
+    // Ensure all keys exist and are of correct type (Arrays vs Objects)
+    // This fixes the issue where data loaded from a corrupted LS (object instead of array) causes .push() to fail
+    return { 
+      ...DEFAULT_STATE, 
+      ...parsed,
+      members: sanitizeArray(parsed.members),
+      contributions: sanitizeArray(parsed.contributions),
+      events: sanitizeArray(parsed.events),
+      eventTransactions: sanitizeArray(parsed.eventTransactions)
+    };
   } catch (e) {
     console.error("Failed to load state", e);
     return DEFAULT_STATE;
@@ -32,12 +57,24 @@ const loadState = (): AppState => {
 };
 
 /**
- * Save state to LocalStorage and notify listeners
+ * Save state to LocalStorage and Firebase, then notify listeners
  */
 const saveState = (state: AppState) => {
   try {
+    // 1. Save locally
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    
+    // 2. Notify local listeners
     notifyListeners(state);
+
+    // 3. Sync to Firebase (Fire and Forget)
+    if (db) {
+        const stateRef = ref(db, 'teamfund_state');
+        // CRITICAL FIX: Firebase throws error if object contains 'undefined'.
+        // JSON stringify/parse removes undefined keys, making the object safe for Firebase.
+        const cleanState = JSON.parse(JSON.stringify(state));
+        set(stateRef, cleanState).catch(e => console.error("Firebase sync error:", e));
+    }
   } catch (e) {
     console.error("Failed to save state", e);
   }
@@ -50,14 +87,15 @@ const notifyListeners = (state: AppState) => {
 /**
  * Subscribes to changes in the AppState.
  * Also listens to the 'storage' event for cross-tab synchronization.
+ * Also listens to Firebase for remote synchronization.
  */
 export const subscribeToAppState = (onUpdate: (state: AppState) => void) => {
   listeners.push(onUpdate);
   
-  // Initial data load
+  // Initial data load from LocalStorage
   onUpdate(loadState());
 
-  // Handle cross-tab updates
+  // Handle cross-tab updates (LocalStorage)
   const handleStorageEvent = (e: StorageEvent) => {
     if (e.key === STORAGE_KEY) {
       onUpdate(loadState());
@@ -65,9 +103,38 @@ export const subscribeToAppState = (onUpdate: (state: AppState) => void) => {
   };
   window.addEventListener('storage', handleStorageEvent);
 
+  // Handle Firebase Realtime Updates
+  let unsubscribeFirebase = () => {};
+  if (db) {
+      const stateRef = ref(db, 'teamfund_state');
+      unsubscribeFirebase = onValue(stateRef, (snapshot) => {
+          const remoteData = snapshot.val();
+          if (remoteData) {
+              // Merge remote data with DEFAULT_STATE
+              // CRITICAL: Sanitize arrays to prevent Object-instead-of-Array bugs from Firebase
+              const mergedState: AppState = {
+                  ...DEFAULT_STATE,
+                  ...remoteData,
+                  members: sanitizeArray(remoteData.members),
+                  contributions: sanitizeArray(remoteData.contributions),
+                  events: sanitizeArray(remoteData.events),
+                  eventTransactions: sanitizeArray(remoteData.eventTransactions)
+              };
+
+              // Update LocalStorage to keep in sync with cloud
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedState));
+              // Notify UI with new data
+              onUpdate(mergedState);
+          }
+      }, (error) => {
+          console.error("Firebase read failed:", error);
+      });
+  }
+
   return () => {
     listeners = listeners.filter(l => l !== onUpdate);
     window.removeEventListener('storage', handleStorageEvent);
+    unsubscribeFirebase();
   };
 };
 
@@ -162,7 +229,6 @@ export const dbActions = {
   
   addEvent: async (newEvent: Event) => {
     const state = loadState();
-    // Initialize events array if it doesn't exist (migration)
     if (!state.events) state.events = [];
     state.events.push(newEvent);
     saveState(state);
@@ -190,10 +256,17 @@ export const dbActions = {
   },
 
   addEventTransaction: async (transaction: EventTransaction) => {
-    const state = loadState();
-    if (!state.eventTransactions) state.eventTransactions = [];
-    state.eventTransactions.push(transaction);
-    saveState(state);
+    try {
+      const state = loadState();
+      // Double check array existence and type
+      if (!state.eventTransactions || !Array.isArray(state.eventTransactions)) {
+        state.eventTransactions = [];
+      }
+      state.eventTransactions.push(transaction);
+      saveState(state);
+    } catch (error) {
+      console.error("Error adding event transaction:", error);
+    }
   },
 
   removeEventTransaction: async (transactionId: string) => {
@@ -303,6 +376,36 @@ export const dbActions = {
       console.error("Import error", error);
       return { success: false, message: "An unexpected error occurred during import." };
     }
+  },
+
+  restoreFromBackup: async (jsonContent: string): Promise<{ success: boolean; message: string }> => {
+    try {
+      const parsed = JSON.parse(jsonContent);
+      
+      // Basic validation
+      if (!parsed.members || !Array.isArray(parsed.members)) {
+         return { success: false, message: "Invalid backup: Missing members data." };
+      }
+
+      // Sanitize and Merge with Default to ensure structure
+      // We essentially overwrite the current state with the backup
+      const newState: AppState = {
+          ...DEFAULT_STATE,
+          ...parsed,
+          members: sanitizeArray(parsed.members),
+          contributions: sanitizeArray(parsed.contributions),
+          events: sanitizeArray(parsed.events),
+          eventTransactions: sanitizeArray(parsed.eventTransactions),
+          monthlyTarget: parsed.monthlyTarget || DEFAULT_STATE.monthlyTarget,
+          currency: parsed.currency || DEFAULT_STATE.currency
+      };
+
+      saveState(newState);
+      return { success: true, message: "System restored from backup successfully." };
+    } catch (e) {
+      console.error(e);
+      return { success: false, message: "Failed to parse backup file." };
+    }
   }
 };
 
@@ -310,6 +413,19 @@ export const dbActions = {
 
 export const generateId = (): string => {
   return Math.random().toString(36).substring(2, 9);
+};
+
+// Exports full state as JSON for backup purposes
+export const exportBackupJSON = (state: AppState) => {
+  const dataStr = JSON.stringify(state, null, 2);
+  const blob = new Blob([dataStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `teamfund_backup_${new Date().toISOString().split('T')[0]}.json`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 };
 
 export const exportDataToCSV = (state: AppState) => {
@@ -346,13 +462,45 @@ export const exportDataToCSV = (state: AppState) => {
     ].join(',');
   });
 
-  const csvContent = [headers.join(','), ...rows].join('\n');
+  let csvContent = [headers.join(','), ...rows].join('\n');
+
+  // --- Append Events Summary ---
+  if (state.events && state.events.length > 0) {
+      csvContent += '\n\n\nEVENTS SUMMARY\n';
+      csvContent += 'Event Name,Date,Status,Budget,Income,Expense,Net Balance\n';
+      
+      const transactions = state.eventTransactions || [];
+      state.events.forEach(e => {
+          const evtTrans = transactions.filter(t => t.eventId === e.id);
+          const inc = evtTrans.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+          const exp = evtTrans.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+          const net = inc - exp;
+          
+          const escapeCsv = (val: any) => {
+             const str = String(val || '');
+             if (str.includes(',')) return `"${str}"`;
+             return str;
+          };
+
+          const line = [
+              escapeCsv(e.name), 
+              e.date.split('T')[0], 
+              e.status, 
+              e.budget || 0, 
+              inc, 
+              exp, 
+              net
+          ].join(',');
+          csvContent += line + '\n';
+      });
+  }
+
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   
   const link = document.createElement('a');
   link.setAttribute('href', url);
-  link.setAttribute('download', `teamfund_export_${new Date().toISOString().split('T')[0]}.csv`);
+  link.setAttribute('download', `teamfund_report_${new Date().toISOString().split('T')[0]}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

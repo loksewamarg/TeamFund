@@ -5,17 +5,19 @@ import {
   CartesianGrid, AreaChart, Area, Cell, Legend, Line, ComposedChart 
 } from 'recharts';
 import { 
-  TrendingUp, Users, Download, Award, Target, Wallet, 
-  ArrowUpRight, ArrowDownRight, Briefcase, Calendar, Table as TableIcon
+  TrendingUp, TrendingDown, Users, Download, Award, Target, Wallet, 
+  ArrowUpRight, ArrowDownRight, Briefcase, Calendar, Table as TableIcon, PartyPopper,
+  CheckCircle2, Clock, FileJson
 } from 'lucide-react';
-import { exportDataToCSV } from '../services/storageService';
+import { exportDataToCSV, exportBackupJSON } from '../services/storageService';
 import { format, subMonths, isSameMonth, parseISO } from 'date-fns';
 
 interface ReportProps {
   state: AppState;
+  onNavigate: (view: any, param?: string) => void;
 }
 
-export const Report: React.FC<ReportProps> = ({ state }) => {
+export const Report: React.FC<ReportProps> = ({ state, onNavigate }) => {
   const [matrixView, setMatrixView] = useState<'6months' | 'year'>('6months');
 
   // --- 1. KPI Calculations ---
@@ -47,6 +49,45 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
       avgPerMember: activeMembers > 0 ? Math.round(totalCollected / activeMembers) : 0
     };
   }, [state]);
+
+  // --- Event Statistics & Lists ---
+  const { eventNet, pastEvents, upcomingEvents } = useMemo(() => {
+    const transactions = state.eventTransactions || [];
+    const events = state.events || [];
+
+    // Calculate Total Net for Grand Total
+    let totalIncome = 0;
+    let totalExpense = 0;
+    
+    // Process all transactions for net calc
+    transactions.forEach(t => {
+        if(t.type === 'income') totalIncome += t.amount;
+        if(t.type === 'expense') totalExpense += t.amount;
+    });
+    const eventNet = totalIncome - totalExpense;
+
+    // Helper to get net for specific event
+    const getEventNet = (eventId: string) => {
+        const evtTrans = transactions.filter(t => t.eventId === eventId);
+        const inc = evtTrans.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+        const exp = evtTrans.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+        return inc - exp;
+    };
+
+    const past = events
+        .filter(e => e.status === 'completed')
+        .map(e => ({...e, net: getEventNet(e.id)}))
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const upcoming = events
+        .filter(e => e.status === 'upcoming')
+        .map(e => ({...e, net: getEventNet(e.id)}))
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    return { eventNet, pastEvents: past, upcomingEvents: upcoming };
+  }, [state.events, state.eventTransactions]);
+
+  const grandTotal = kpis.totalCollected + eventNet;
 
   // --- 2. Trend Chart Data (Last 12 Months) ---
   const trendData = useMemo(() => {
@@ -98,9 +139,6 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
     return { months, rows };
   }, [state, matrixView]);
 
-  // Colors for charts
-  const COLORS = ['#006c4c', '#4d6357', '#3d6373', '#89f8c6', '#d0e8d9', '#707973'];
-
   return (
     <div className="space-y-4 md:space-y-6 pb-24 animate-fade-in">
       
@@ -114,25 +152,36 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
         {/* Mobile-optimized action row */}
         <div className="flex flex-col sm:flex-row gap-4 sm:items-center">
             {/* Fund Display */}
-            <div className="flex items-center justify-between sm:block sm:text-right bg-white/50 sm:bg-transparent p-3 sm:p-0 rounded-lg border sm:border-none border-md-sys-color-outline/10">
-                <span className="text-xs font-bold text-md-sys-color-primary uppercase tracking-wider block">Current Fund</span>
-                <span className="text-xl md:text-2xl font-bold text-md-sys-color-on-surface block">{state.currency}{kpis.totalCollected.toLocaleString()}</span>
+            <div className="flex items-center justify-between sm:block sm:text-right bg-white/50 sm:bg-transparent p-3 sm:p-0 rounded-lg border sm:border-none border-md-sys-color-outline/10 min-w-[140px]">
+                <span className="text-xs font-bold text-md-sys-color-primary uppercase tracking-wider block">Total Fund</span>
+                <span className="text-xl md:text-2xl font-bold text-md-sys-color-on-surface block">{state.currency}{grandTotal.toLocaleString()}</span>
             </div>
 
             <div className="hidden sm:block h-10 w-px bg-md-sys-color-outline/20"></div>
 
-            <button 
-                onClick={() => exportDataToCSV(state)}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 bg-md-sys-color-primary text-md-sys-color-on-primary px-5 py-3 rounded-full font-medium shadow-md-elevation-1 hover:shadow-md-elevation-2 hover:bg-md-sys-color-primary/90 transition-all active:scale-95"
-            >
-                <Download size={18} />
-                <span>Download CSV</span>
-            </button>
+            <div className="flex gap-2 w-full sm:w-auto">
+                <button 
+                    onClick={() => exportBackupJSON(state)}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-md-sys-color-secondary-container text-md-sys-color-on-secondary-container px-4 py-3 rounded-full font-medium hover:shadow-md-elevation-1 transition-all active:scale-95"
+                    title="Save full backup for restoration"
+                >
+                    <FileJson size={18} />
+                    <span className="whitespace-nowrap">Backup Data</span>
+                </button>
+                <button 
+                    onClick={() => exportDataToCSV(state)}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-md-sys-color-primary text-md-sys-color-on-primary px-5 py-3 rounded-full font-medium shadow-md-elevation-1 hover:shadow-md-elevation-2 hover:bg-md-sys-color-primary/90 transition-all active:scale-95"
+                >
+                    <Download size={18} />
+                    <span>Download CSV</span>
+                </button>
+            </div>
         </div>
       </div>
 
-      {/* --- KPI CARDS --- */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+      {/* --- KPI CARDS (Reduced to 3) --- */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+          {/* Monthly Collection */}
           <div className="bg-white p-4 md:p-5 rounded-md-xl border border-md-sys-color-outline/10 shadow-sm flex flex-col justify-between">
              <div className="flex items-start justify-between mb-3">
                  <div className="p-2 bg-md-sys-color-primary-container rounded-lg text-md-sys-color-on-primary-container">
@@ -149,6 +198,7 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
              </div>
           </div>
 
+          {/* Active Members */}
           <div className="bg-white p-4 md:p-5 rounded-md-xl border border-md-sys-color-outline/10 shadow-sm flex flex-col justify-between">
              <div className="flex items-start justify-between mb-3">
                  <div className="p-2 bg-md-sys-color-secondary-container rounded-lg text-md-sys-color-on-secondary-container">
@@ -160,30 +210,87 @@ export const Report: React.FC<ReportProps> = ({ state }) => {
                 <h3 className="text-xl md:text-2xl font-bold text-md-sys-color-on-surface mt-1">{kpis.activeMembers}</h3>
              </div>
           </div>
-
-          <div className="bg-white p-4 md:p-5 rounded-md-xl border border-md-sys-color-outline/10 shadow-sm flex flex-col justify-between">
-             <div className="flex items-start justify-between mb-3">
-                 <div className="p-2 bg-md-sys-color-tertiary-container rounded-lg text-md-sys-color-on-tertiary-container">
-                     <Target size={20} />
-                 </div>
-                 <span className="text-[10px] md:text-xs text-md-sys-color-on-surface-variant bg-md-sys-color-surface-container-high px-2 py-1 rounded-full">Lifetime</span>
-             </div>
-             <div>
-                <p className="text-xs md:text-sm text-md-sys-color-on-surface-variant">Avg. Contribution</p>
-                <h3 className="text-xl md:text-2xl font-bold text-md-sys-color-on-surface mt-1">{state.currency}{kpis.avgPerMember.toLocaleString()}</h3>
-             </div>
-          </div>
-
-           <div className="bg-md-sys-color-primary text-md-sys-color-on-primary p-4 md:p-5 rounded-md-xl border border-transparent shadow-md-elevation-1 flex flex-col justify-between">
+          
+          {/* Total Available Funds */}
+          <div className="bg-md-sys-color-primary text-md-sys-color-on-primary p-4 md:p-5 rounded-md-xl border border-transparent shadow-md-elevation-1 flex flex-col justify-between">
              <div className="flex items-start justify-between mb-3">
                  <div className="p-2 bg-white/20 rounded-lg text-white">
                      <Award size={20} />
                  </div>
              </div>
              <div>
-                <p className="text-xs md:text-sm opacity-80">Total Fund Value</p>
-                <h3 className="text-xl md:text-2xl font-bold mt-1">{state.currency}{kpis.totalCollected.toLocaleString()}</h3>
+                <p className="text-xs md:text-sm opacity-80">Total Available Cash</p>
+                <h3 className="text-xl md:text-2xl font-bold mt-1">{state.currency}{grandTotal.toLocaleString()}</h3>
              </div>
+          </div>
+      </div>
+      
+      {/* --- EVENTS SUMMARY CARDS --- */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Past Events */}
+          <div className="bg-white rounded-md-xl border border-md-sys-color-outline/10 p-4 md:p-5 shadow-sm flex flex-col">
+                <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-base font-bold text-md-sys-color-on-surface flex items-center gap-2">
+                        <CheckCircle2 size={18} className="text-md-sys-color-primary" /> Past Events
+                    </h3>
+                    <span className="text-xs font-medium bg-md-sys-color-surface-container-high px-2 py-0.5 rounded-full text-md-sys-color-on-surface-variant">
+                        {pastEvents.length}
+                    </span>
+                </div>
+                <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                    {pastEvents.length > 0 ? pastEvents.map(e => (
+                        <div 
+                            key={e.id} 
+                            onClick={() => onNavigate('events', e.id)}
+                            className="p-3 rounded-lg bg-md-sys-color-surface-container-low border border-md-sys-color-outline/5 flex justify-between items-center hover:bg-md-sys-color-surface-container-high/50 transition-colors cursor-pointer group"
+                        >
+                            <div>
+                                <p className="font-medium text-sm text-md-sys-color-on-surface group-hover:text-md-sys-color-primary transition-colors">{e.name}</p>
+                                <p className="text-xs text-md-sys-color-on-surface-variant">{format(new Date(e.date), 'MMM d, yyyy')}</p>
+                            </div>
+                            <span className={`text-xs font-bold px-2 py-1 rounded-full ${e.net >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                {e.net >= 0 ? '+' : ''}{state.currency}{e.net}
+                            </span>
+                        </div>
+                    )) : <p className="text-xs text-md-sys-color-on-surface-variant italic p-2 text-center">No past events conducted.</p>}
+                </div>
+          </div>
+
+          {/* Upcoming Events */}
+          <div className="bg-white rounded-md-xl border border-md-sys-color-outline/10 p-4 md:p-5 shadow-sm flex flex-col">
+                <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-base font-bold text-md-sys-color-on-surface flex items-center gap-2">
+                        <Calendar size={18} className="text-md-sys-color-tertiary" /> Future Plans
+                    </h3>
+                    <span className="text-xs font-medium bg-md-sys-color-surface-container-high px-2 py-0.5 rounded-full text-md-sys-color-on-surface-variant">
+                        {upcomingEvents.length}
+                    </span>
+                </div>
+                <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                    {upcomingEvents.length > 0 ? upcomingEvents.map(e => (
+                        <div 
+                            key={e.id} 
+                            onClick={() => onNavigate('events', e.id)}
+                            className="p-3 rounded-lg bg-md-sys-color-surface-container-low border border-md-sys-color-outline/5 flex justify-between items-center hover:bg-md-sys-color-surface-container-high/50 transition-colors cursor-pointer group"
+                        >
+                            <div>
+                                <p className="font-medium text-sm text-md-sys-color-on-surface group-hover:text-md-sys-color-primary transition-colors">{e.name}</p>
+                                <p className="text-xs text-md-sys-color-on-surface-variant flex items-center gap-1">
+                                    <Clock size={10} /> {format(new Date(e.date), 'MMM d, yyyy')}
+                                </p>
+                            </div>
+                            {e.budget && e.budget > 0 ? (
+                                <span className="text-xs font-medium bg-md-sys-color-secondary-container text-md-sys-color-on-secondary-container px-2 py-1 rounded-full">
+                                Budget: {state.currency}{e.budget}
+                                </span>
+                            ) : (
+                                <span className="text-xs font-medium bg-md-sys-color-surface-variant text-md-sys-color-on-surface-variant px-2 py-1 rounded-full">
+                                Planned
+                                </span>
+                            )}
+                        </div>
+                    )) : <p className="text-xs text-md-sys-color-on-surface-variant italic p-2 text-center">No upcoming events planned.</p>}
+                </div>
           </div>
       </div>
 

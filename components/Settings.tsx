@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { AppState } from '../types';
-import { Save, Database, Download, Upload, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Save, Database, Download, Upload, AlertCircle, CheckCircle2, FileJson } from 'lucide-react';
 import { exportDataToCSV, dbActions } from '../services/storageService';
 
 interface SettingsProps {
@@ -32,11 +32,20 @@ export const Settings: React.FC<SettingsProps> = ({ state, onUpdateSettings }) =
       const file = e.target.files?.[0];
       if (!file) return;
 
+      const isJson = file.name.toLowerCase().endsWith('.json');
       const reader = new FileReader();
+
       reader.onload = async (event) => {
           const content = event.target?.result as string;
           if (content) {
-              const result = await dbActions.importFromCSV(content);
+              let result;
+              
+              if (isJson) {
+                  result = await dbActions.restoreFromBackup(content);
+              } else {
+                  result = await dbActions.importFromCSV(content);
+              }
+
               setImportStatus({
                   type: result.success ? 'success' : 'error',
                   message: result.message
@@ -127,17 +136,17 @@ export const Settings: React.FC<SettingsProps> = ({ state, onUpdateSettings }) =
                  <div className="flex flex-col gap-3 p-4 bg-md-sys-color-surface-container rounded-lg">
                     <div className="flex items-center justify-between">
                         <div>
-                            <p className="font-medium text-md-sys-color-on-surface">Bulk Import</p>
-                            <p className="text-xs text-md-sys-color-on-surface-variant">Update members & contributions via CSV</p>
+                            <p className="font-medium text-md-sys-color-on-surface">Restore / Import</p>
+                            <p className="text-xs text-md-sys-color-on-surface-variant">Upload CSV or JSON Backup</p>
                         </div>
                         <label 
                             className="cursor-pointer text-md-sys-color-primary hover:bg-md-sys-color-primary-container/20 p-2 rounded-full transition-colors"
-                            title="Upload CSV"
+                            title="Upload File"
                         >
                             <Upload size={24} />
                             <input 
                                 type="file" 
-                                accept=".csv" 
+                                accept=".csv,.json" 
                                 className="hidden" 
                                 ref={fileInputRef}
                                 onChange={handleFileUpload}

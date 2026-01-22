@@ -157,7 +157,7 @@ const App: React.FC = () => {
       case 'history':
         return <History state={state} />;
       case 'report':
-        return <Report state={state} />;
+        return <Report state={state} onNavigate={handleNavigate} />;
       case 'settings':
         return <Settings state={state} onUpdateSettings={updateSettings} />;
       default:

@@ -395,56 +395,87 @@ export const Events: React.FC<EventsProps> = ({ state, initialEventId }) => {
             </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
-            {eventsList.map(evt => (
-                <div 
-                    key={evt.id} 
-                    onClick={() => setSelectedEventId(evt.id)}
-                    className={`group relative overflow-hidden bg-white rounded-[1.25rem] border border-md-sys-color-outline/10 p-5 cursor-pointer transition-all hover:shadow-md-elevation-1 hover:-translate-y-1 active:scale-[0.98] ${evt.status === 'completed' ? 'opacity-80 grayscale-[0.5]' : ''}`}
-                >
-                    {/* Decorative background blob */}
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-md-sys-color-primary-container/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none group-hover:bg-md-sys-color-primary-container/20 transition-colors"></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
+            {eventsList.map(evt => {
+                const percentUsed = evt.budget && evt.budget > 0 ? Math.min((evt.expense / evt.budget) * 100, 100) : 0;
+                
+                return (
+                    <div 
+                        key={evt.id} 
+                        onClick={() => setSelectedEventId(evt.id)}
+                        className={`group bg-white rounded-2xl p-5 border border-md-sys-color-outline/10 shadow-sm hover:shadow-md-elevation-2 transition-all duration-300 cursor-pointer relative overflow-hidden flex flex-col justify-between h-full min-h-[180px] ${evt.status === 'completed' ? 'opacity-75 grayscale-[0.3]' : ''}`}
+                    >
+                        {/* Status Bar on Left */}
+                        <div className={`absolute left-0 top-4 bottom-4 w-1 rounded-r-full ${evt.status === 'completed' ? 'bg-md-sys-color-outline/20' : 'bg-md-sys-color-primary'}`}></div>
 
-                    <div className="relative z-10">
-                        <div className="flex justify-between items-start mb-4">
-                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl shadow-sm ${evt.status === 'completed' ? 'bg-gray-100 text-gray-500' : 'bg-gradient-to-br from-md-sys-color-primary-container to-emerald-100 text-md-sys-color-primary'}`}>
-                                <PartyPopper size={20} />
+                        <div>
+                            {/* Header: Date & Status */}
+                            <div className="flex justify-between items-start mb-3 pl-3">
+                                <div className="flex flex-col">
+                                    <span className="text-xs font-bold text-md-sys-color-on-surface-variant/70 uppercase tracking-wider flex items-center gap-1.5">
+                                        <Calendar size={12} />
+                                        {format(new Date(evt.date), 'MMM d, yyyy')}
+                                    </span>
+                                </div>
+                                
+                                {evt.status === 'completed' && (
+                                     <span className="text-[10px] font-bold uppercase bg-md-sys-color-surface-variant text-md-sys-color-on-surface-variant px-2 py-0.5 rounded-md">
+                                        Closed
+                                     </span>
+                                )}
                             </div>
-                            
-                            <div className="flex flex-col items-end">
-                                <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full mb-1 ${evt.status === 'completed' ? 'bg-gray-100 text-gray-500' : 'bg-emerald-50 text-emerald-700'}`}>
-                                    {evt.status === 'completed' ? 'Closed' : 'Active'}
-                                </span>
-                                <span className="text-xs font-medium text-md-sys-color-on-surface-variant flex items-center gap-1">
-                                    <Calendar size={12} /> {format(new Date(evt.date), 'MMM d')}
-                                </span>
-                            </div>
+
+                            {/* Title */}
+                            <h3 className="text-xl font-bold text-md-sys-color-on-surface mb-2 pl-3 leading-tight group-hover:text-md-sys-color-primary transition-colors">
+                                {evt.name}
+                            </h3>
+
+                            {/* Budget Progress (if budget set) */}
+                            {evt.budget > 0 && (
+                                <div className="pl-3 mb-4">
+                                    <div className="flex justify-between text-[10px] font-medium text-md-sys-color-on-surface-variant mb-1">
+                                        <span>Budget: {state.currency}{evt.budget}</span>
+                                        <span>{Math.round(percentUsed)}% Used</span>
+                                    </div>
+                                    <div className="w-full h-1.5 bg-md-sys-color-surface-container-high rounded-full overflow-hidden">
+                                        <div 
+                                            className={`h-full rounded-full ${percentUsed > 90 ? 'bg-md-sys-color-error' : 'bg-md-sys-color-primary'}`} 
+                                            style={{ width: `${percentUsed}%` }}
+                                        ></div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
-                        <h3 className="text-lg font-bold text-md-sys-color-on-surface mb-4 leading-tight group-hover:text-md-sys-color-primary transition-colors line-clamp-2">
-                            {evt.name}
-                        </h3>
-
-                        {/* Financial Grid */}
-                        <div className="bg-md-sys-color-surface-container-low rounded-xl p-3 grid grid-cols-3 gap-2 border border-md-sys-color-outline/5">
-                            <div className="flex flex-col items-center justify-center">
-                                <span className="text-[10px] uppercase font-bold text-md-sys-color-on-surface-variant/70 mb-0.5">In</span>
-                                <span className="text-sm font-bold text-emerald-600">{state.currency}{evt.income}</span>
-                            </div>
-                            <div className="flex flex-col items-center justify-center border-l border-md-sys-color-outline/10">
-                                <span className="text-[10px] uppercase font-bold text-md-sys-color-on-surface-variant/70 mb-0.5">Out</span>
-                                <span className="text-sm font-bold text-red-600">{state.currency}{evt.expense}</span>
-                            </div>
-                            <div className="flex flex-col items-center justify-center border-l border-md-sys-color-outline/10 bg-white rounded-lg shadow-sm">
-                                <span className="text-[10px] uppercase font-bold text-md-sys-color-on-surface-variant/70 mb-0.5">Net</span>
-                                <span className={`text-sm font-bold ${evt.balance >= 0 ? 'text-md-sys-color-primary' : 'text-md-sys-color-error'}`}>
-                                    {evt.balance > 0 ? '+' : ''}{evt.balance}
+                        {/* Footer: Financial Stats */}
+                        <div className="mt-4 pl-3 pt-4 border-t border-md-sys-color-outline/5 grid grid-cols-3 gap-2">
+                             <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-md-sys-color-on-surface-variant/60 uppercase">Income</span>
+                                <span className="text-sm font-bold text-emerald-600 flex items-center gap-0.5">
+                                   <TrendingUp size={12} /> {state.currency}{evt.income}
                                 </span>
-                            </div>
+                             </div>
+                             <div className="flex flex-col border-l border-md-sys-color-outline/10 pl-3">
+                                <span className="text-[10px] font-bold text-md-sys-color-on-surface-variant/60 uppercase">Spent</span>
+                                <span className="text-sm font-bold text-rose-500 flex items-center gap-0.5">
+                                   <TrendingDown size={12} /> {state.currency}{evt.expense}
+                                </span>
+                             </div>
+                             <div className="flex flex-col items-end">
+                                <span className="text-[10px] font-bold text-md-sys-color-on-surface-variant/60 uppercase">Net</span>
+                                <span className={`text-base font-black ${evt.balance >= 0 ? 'text-md-sys-color-primary' : 'text-md-sys-color-error'}`}>
+                                   {evt.balance > 0 ? '+' : ''}{evt.balance}
+                                </span>
+                             </div>
+                        </div>
+                        
+                        {/* Hover decorative icon */}
+                        <div className="absolute -right-4 -bottom-4 opacity-0 group-hover:opacity-10 transition-opacity duration-300 pointer-events-none">
+                             <PartyPopper size={80} />
                         </div>
                     </div>
-                </div>
-            ))}
+                );
+            })}
         </div>
 
         {eventsList.length === 0 && (
