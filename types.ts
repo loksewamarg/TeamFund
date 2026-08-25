@@ -46,7 +46,7 @@ export interface AppState {
   eventTransactions: EventTransaction[];
 }
 
-export type ViewState = 'dashboard' | 'tracker' | 'members' | 'history' | 'settings' | 'report' | 'events';
+export type ViewState = 'dashboard' | 'tracker' | 'members' | 'history' | 'settings' | 'report' | 'events' | 'insights';
 
 export interface MonthlyStats {
   totalCollected: number;

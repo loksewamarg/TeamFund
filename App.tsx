@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
-import { LayoutDashboard, Users, History as HistoryIcon, Settings as SettingsIcon, CalendarCheck, PieChart, Loader2, PartyPopper, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Users, History as HistoryIcon, Settings as SettingsIcon, CalendarCheck, PieChart, Loader2, PartyPopper, Menu, X, Sparkles } from 'lucide-react';
 import { AppState, ViewState, Contribution, Member } from './types';
 import { subscribeToAppState, dbActions } from './services/storageService';
 
@@ -12,6 +12,7 @@ const History = lazy(() => import('./components/History').then(module => ({ defa
 const Report = lazy(() => import('./components/Report').then(module => ({ default: module.Report })));
 const Settings = lazy(() => import('./components/Settings').then(module => ({ default: module.Settings })));
 const Events = lazy(() => import('./components/Events').then(module => ({ default: module.Events })));
+const AIInsights = lazy(() => import('./components/AIInsights').then(module => ({ default: module.AIInsights })));
 
 // NavItem extracted to prevent re-creation on every render
 const NavItem = ({ 
@@ -154,10 +155,12 @@ const App: React.FC = () => {
         />;
       case 'events':
         return <Events state={state} initialEventId={viewParam} />;
-      case 'history':
-        return <History state={state} />;
       case 'report':
         return <Report state={state} onNavigate={handleNavigate} />;
+      case 'insights':
+        return <AIInsights state={state} />;
+      case 'history':
+        return <History state={state} />;
       case 'settings':
         return <Settings state={state} onUpdateSettings={updateSettings} />;
       default:
@@ -177,7 +180,7 @@ const App: React.FC = () => {
       {/* --- DESKTOP NAVIGATION DRAWER --- */}
       <aside className="hidden md:flex flex-col w-80 p-4 fixed h-full z-20 bg-md-sys-color-surface-container-low border-r border-md-sys-color-outline/10">
         <div className="px-6 py-8 mb-4">
-           <div className="flex items-center gap-3 text-md-sys-color-primary">
+           <div className="flex items-center gap-3 text-md-sys-color-primary cursor-pointer" onClick={() => handleNavigate('dashboard')}>
               <div className="w-10 h-10 rounded-xl bg-md-sys-color-primary-container text-md-sys-color-on-primary-container flex items-center justify-center text-xl font-bold">
                 {state.currency}
               </div>
@@ -191,6 +194,7 @@ const App: React.FC = () => {
           <NavItem view="events" icon={PartyPopper} label="Events" isActive={currentView === 'events'} onClick={handleNavigate} />
           <NavItem view="members" icon={Users} label="Members" isActive={currentView === 'members'} onClick={handleNavigate} />
           <NavItem view="report" icon={PieChart} label="Reports" isActive={currentView === 'report'} onClick={handleNavigate} />
+          <NavItem view="insights" icon={Sparkles} label="AI Assistant" isActive={currentView === 'insights'} onClick={handleNavigate} />
           <NavItem view="history" icon={HistoryIcon} label="History" isActive={currentView === 'history'} onClick={handleNavigate} />
           <NavItem view="settings" icon={SettingsIcon} label="Settings" isActive={currentView === 'settings'} onClick={handleNavigate} />
         </nav>
@@ -249,6 +253,7 @@ const App: React.FC = () => {
                   <NavItem view="events" icon={PartyPopper} label="Events" isActive={currentView === 'events'} onClick={handleNavigate} />
                   <NavItem view="members" icon={Users} label="Members" isActive={currentView === 'members'} onClick={handleNavigate} />
                   <NavItem view="report" icon={PieChart} label="Reports" isActive={currentView === 'report'} onClick={handleNavigate} />
+                  <NavItem view="insights" icon={Sparkles} label="AI Assistant" isActive={currentView === 'insights'} onClick={handleNavigate} />
                   <NavItem view="history" icon={HistoryIcon} label="History" isActive={currentView === 'history'} onClick={handleNavigate} />
                   <NavItem view="settings" icon={SettingsIcon} label="Settings" isActive={currentView === 'settings'} onClick={handleNavigate} />
                </nav>

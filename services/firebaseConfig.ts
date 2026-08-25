@@ -1,36 +1,31 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase, Database } from 'firebase/database';
 
-// Configuration based on your provided screenshot
+// Environment variable config with safe fallbacks
 const firebaseConfig = {
-  // ⚠️ CRITICAL: You must replace this with your actual Web API Key from the Firebase Console 
-  // (Project Settings > General > Your apps > SDK setup and configuration)
-  apiKey: "YOUR_API_KEY", 
-  
-  authDomain: "teamfund-b6c6a.firebaseapp.com",
-  databaseURL: "https://teamfund-b6c6a-default-rtdb.firebaseio.com",
-  projectId: "teamfund-b6c6a",
-  storageBucket: "teamfund-b6c6a.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID", // Optional for Database only
-  appId: "YOUR_APP_ID" // Optional for Database only
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY || "").trim(),
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "teamfund-b6c6a.firebaseapp.com",
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || "https://teamfund-b6c6a-default-rtdb.firebaseio.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "teamfund-b6c6a",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "teamfund-b6c6a.appspot.com",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || ""
 };
 
 let app;
 let db: Database | null = null;
 
-// Initialize Firebase only if config is updated from placeholders
-// Check if apiKey has been replaced (it's the most critical one)
-if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+// Initialize Firebase only if an actual API key is provided
+if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && !firebaseConfig.apiKey.includes("YOUR_")) {
     try {
         app = initializeApp(firebaseConfig);
         db = getDatabase(app);
-        console.log("TeamFund: Firebase initialized successfully for project teamfund-b6c6a.");
+        console.log(`TeamFund: Firebase connected to ${firebaseConfig.projectId}.`);
     } catch (e) {
         console.error("TeamFund: Firebase initialization failed.", e);
     }
 } else {
-    console.warn("TeamFund: Missing API Key. The app is in Offline Mode.");
-    console.warn("Please open 'services/firebaseConfig.ts' and paste your Firebase API Key.");
+    console.info("TeamFund: Firebase API Key not provided. Running in Offline Mode with LocalStorage.");
 }
 
 export { db };

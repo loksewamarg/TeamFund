@@ -73,7 +73,12 @@ const saveState = (state: AppState) => {
         // CRITICAL FIX: Firebase throws error if object contains 'undefined'.
         // JSON stringify/parse removes undefined keys, making the object safe for Firebase.
         const cleanState = JSON.parse(JSON.stringify(state));
-        set(stateRef, cleanState).catch(e => console.error("Firebase sync error:", e));
+        set(stateRef, cleanState).catch(e => {
+            console.error("Firebase sync error:", e);
+            if (e.message && e.message.includes('PERMISSION_DENIED')) {
+                console.warn("⚠️ Firebase write permission denied. Data saved locally only.");
+            }
+        });
     }
   } catch (e) {
     console.error("Failed to save state", e);
@@ -128,6 +133,13 @@ export const subscribeToAppState = (onUpdate: (state: AppState) => void) => {
           }
       }, (error) => {
           console.error("Firebase read failed:", error);
+          if (error.message && error.message.includes('permission_denied')) {
+              console.warn(
+                "⚠️ TeamFund Firebase Notice: Permission denied.\n" +
+                "To fix this, go to Firebase Console > Realtime Database > Rules tab, and set:\n" +
+                "{\n  \"rules\": {\n    \".read\": true,\n    \".write\": true\n  }\n}"
+              );
+          }
       });
   }
 
