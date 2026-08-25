@@ -191,6 +191,15 @@ const parseCSV = (text: string): string[][] => {
   return rows;
 };
 
+// --- Helper: Robust Number Parser (handles currency symbols, commas, negative numbers) ---
+const cleanNumber = (val: any): number => {
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  if (!val) return 0;
+  const str = String(val).trim().replace(/,/g, '').replace(/[^0-9.-]/g, '');
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+};
+
 // --- Actions ---
 
 export const dbActions = {
@@ -291,102 +300,371 @@ export const dbActions = {
   importFromCSV: async (csvContent: string): Promise<{ success: boolean; message: string }> => {
     try {
       const state = loadState();
-      
+      if (!state.members) state.members = [];
+      if (!state.contributions) state.contributions = [];
+      if (!state.events) state.events = [];
+      if (!state.eventTransactions) state.eventTransactions = [];
+
       const rows = parseCSV(csvContent);
-      if (rows.length < 2) return { success: false, message: "CSV is empty or missing headers." };
+      if (rows.length < 1) return { success: false, message: "CSV file is empty." };
 
-      const headers = rows[0].map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
-      const nameIdx = headers.findIndex(h => h.includes('member name'));
-      const jobIdx = headers.findIndex(h => h.includes('job'));
-      const mobileIdx = headers.findIndex(h => h.includes('mobile'));
-      const addressIdx = headers.findIndex(h => h.includes('address'));
-      const statusIdx = headers.findIndex(h => h.includes('status'));
-
-      if (nameIdx === -1) return { success: false, message: "Missing required column: Member Name" };
-
-      const dateColumns: { index: number, month: string }[] = [];
-      headers.forEach((h, idx) => {
-          if (/^\d{4}-\d{2}$/.test(h)) dateColumns.push({ index: idx, month: h });
-      });
+      let currentSection: 'UNKNOWN' | 'MEMBERS' | 'EVENTS' | 'TRANSACTIONS' = 'UNKNOWN';
+      
+      // Column Indices per section
+      let memberCols: { name: number; job: number; mobile: number; address: number; status: number; dates: { idx: number; month: string }[] } | null = null;
+      let eventCols: { name: number; date: number; status: number; budget: number; desc: number; income: number; expense: number } | null = null;
+      let transCols: { eventName: number; type: number; amount: number; date: number; desc: number; memberName: number } | null = null;
 
       let membersAdded = 0;
       let membersUpdated = 0;
+      let eventsAdded = 0;
+      let eventsUpdated = 0;
+      let transactionsAdded = 0;
 
-      for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row.length || !row[nameIdx]?.trim()) continue;
+      // Track events that have itemized transactions imported so we don't double count summary transactions
+      const eventsWithItemizedTrans = new Set<string>();
 
-          const name = row[nameIdx].trim();
-          const job = jobIdx !== -1 ? (row[jobIdx]?.trim() || '') : '';
-          const mobile = mobileIdx !== -1 ? (row[mobileIdx]?.trim() || '') : '';
-          const address = addressIdx !== -1 ? (row[addressIdx]?.trim() || '') : '';
-          const statusVal = statusIdx !== -1 ? (row[statusIdx]?.trim().toLowerCase()) : 'active';
-          const active = statusVal === 'active';
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.length === 0) continue;
+        
+        const rawCells = row.map(c => c ? c.trim() : '');
+        // Check if row is all empty
+        if (rawCells.every(c => !c)) continue;
 
-          // Check if member exists
+        const firstCellLower = rawCells[0].toLowerCase().replace(/^["'-]+|["'-]+$/g, '').trim();
+        const fullRowLower = rawCells.map(c => c.toLowerCase().replace(/^["']|["']$/g, '').trim());
+
+        // Check for section markers or title headers
+        if (
+          firstCellLower.includes('events summary') || 
+          firstCellLower === 'events' || 
+          firstCellLower.includes('events ---') || 
+          firstCellLower.includes('events list')
+        ) {
+          currentSection = 'EVENTS';
+          eventCols = null;
+          continue;
+        }
+
+        if (
+          firstCellLower.includes('event transactions') || 
+          firstCellLower.includes('transactions') ||
+          firstCellLower.includes('transactions ---')
+        ) {
+          currentSection = 'TRANSACTIONS';
+          transCols = null;
+          continue;
+        }
+
+        if (
+          firstCellLower.includes('members summary') || 
+          firstCellLower === 'members' || 
+          firstCellLower.includes('members ---')
+        ) {
+          currentSection = 'MEMBERS';
+          memberCols = null;
+          continue;
+        }
+
+        // Check if this row is a Header Row:
+        const hasMemberHeader = fullRowLower.some(c => c === 'member name' || c.includes('member name'));
+        const hasEventTransHeader = (fullRowLower.some(c => c.includes('event name') || c === 'event') && 
+                                     (fullRowLower.some(c => c.includes('transaction type') || c === 'type') || 
+                                      (fullRowLower.some(c => c.includes('amount')) && fullRowLower.some(c => c.includes('description')))));
+        const hasEventHeader = (fullRowLower.some(c => c.includes('event name') || c === 'event' || c === 'event title') && 
+                                (fullRowLower.some(c => c.includes('budget') || c.includes('estimate') || c.includes('allocation')) || 
+                                 fullRowLower.some(c => c.includes('status')) || 
+                                 fullRowLower.some(c => c.includes('net balance') || c.includes('net')) || 
+                                 fullRowLower.some(c => c.includes('income') || c.includes('collected')) || 
+                                 fullRowLower.some(c => c.includes('expense') || c.includes('spent'))));
+
+        if (hasEventTransHeader && !hasMemberHeader) {
+          currentSection = 'TRANSACTIONS';
+          transCols = {
+            eventName: fullRowLower.findIndex(c => c.includes('event name') || c === 'event'),
+            type: fullRowLower.findIndex(c => c.includes('type')),
+            amount: fullRowLower.findIndex(c => c.includes('amount')),
+            date: fullRowLower.findIndex(c => c.includes('date')),
+            desc: fullRowLower.findIndex(c => c.includes('description') || c.includes('desc') || c.includes('note')),
+            memberName: fullRowLower.findIndex(c => c.includes('member'))
+          };
+          continue;
+        }
+
+        if (hasEventHeader && !hasMemberHeader) {
+          currentSection = 'EVENTS';
+          eventCols = {
+            name: fullRowLower.findIndex(c => c.includes('event name') || c === 'event' || c === 'name' || c === 'event title'),
+            date: fullRowLower.findIndex(c => c.includes('date')),
+            status: fullRowLower.findIndex(c => c.includes('status')),
+            budget: fullRowLower.findIndex(c => c.includes('budget') || c.includes('estimate') || c.includes('allocation')),
+            desc: fullRowLower.findIndex(c => c.includes('description') || c.includes('desc') || c.includes('note') || c.includes('details')),
+            income: fullRowLower.findIndex(c => c.includes('income') || c.includes('collected') || c.includes('revenue') || c.includes('received')),
+            expense: fullRowLower.findIndex(c => c.includes('expense') || c.includes('spent') || c.includes('cost') || c.includes('expenditure'))
+          };
+          continue;
+        }
+
+        if (hasMemberHeader) {
+          currentSection = 'MEMBERS';
+          const dates: { idx: number; month: string }[] = [];
+          fullRowLower.forEach((c, idx) => {
+            if (/^\d{4}-\d{2}$/.test(c)) {
+              dates.push({ idx, month: c });
+            }
+          });
+
+          memberCols = {
+            name: fullRowLower.findIndex(c => c.includes('member name')),
+            job: fullRowLower.findIndex(c => c.includes('job') || c.includes('role') || c.includes('title')),
+            mobile: fullRowLower.findIndex(c => c.includes('mobile') || c.includes('phone') || c.includes('contact')),
+            address: fullRowLower.findIndex(c => c.includes('address')),
+            status: fullRowLower.findIndex(c => c === 'status'),
+            dates
+          };
+          continue;
+        }
+
+        // If we haven't identified section yet from header, check if we can infer
+        if (currentSection === 'UNKNOWN') {
+          continue;
+        }
+
+        // --- Process Data Rows Based on currentSection ---
+        if (currentSection === 'MEMBERS' && memberCols && memberCols.name !== -1) {
+          const name = rawCells[memberCols.name]?.trim();
+          if (!name || name.toLowerCase().includes('member name')) continue;
+
+          const job = memberCols.job !== -1 ? (rawCells[memberCols.job]?.trim() || 'Member') : 'Member';
+          const mobile = memberCols.mobile !== -1 ? (rawCells[memberCols.mobile]?.trim() || '') : '';
+          const address = memberCols.address !== -1 ? (rawCells[memberCols.address]?.trim() || '') : '';
+          const statusStr = memberCols.status !== -1 ? (rawCells[memberCols.status]?.trim().toLowerCase()) : 'active';
+          const active = statusStr !== 'inactive' && statusStr !== 'false' && statusStr !== '0';
+
           let member = state.members.find(m => m.name.toLowerCase() === name.toLowerCase());
-          
           if (member) {
-              // Update Member
-              let wasUpdated = false;
-              if (job && member.job !== job) { member.job = job; wasUpdated = true; }
-              if (mobile && member.mobile !== mobile) { member.mobile = mobile; wasUpdated = true; }
-              if (address && member.address !== address) { member.address = address; wasUpdated = true; }
-              if (member.active !== active) { member.active = active; wasUpdated = true; }
-              
-              if (wasUpdated) membersUpdated++;
+            let wasUpdated = false;
+            if (job && member.job !== job) { member.job = job; wasUpdated = true; }
+            if (mobile && member.mobile !== mobile) { member.mobile = mobile; wasUpdated = true; }
+            if (address && member.address !== address) { member.address = address; wasUpdated = true; }
+            if (member.active !== active) { member.active = active; wasUpdated = true; }
+            if (wasUpdated) membersUpdated++;
           } else {
-              // New Member
-              member = {
-                  id: generateId(),
-                  name,
-                  job: job || 'Member',
-                  mobile,
-                  address,
-                  active,
-                  joinedAt: new Date().toISOString()
-              };
-              state.members.push(member);
-              membersAdded++;
+            member = {
+              id: generateId(),
+              name,
+              job,
+              mobile,
+              address,
+              active,
+              joinedAt: new Date().toISOString()
+            };
+            state.members.push(member);
+            membersAdded++;
           }
 
-          // Process Contributions
-          dateColumns.forEach(col => {
-              const amountStr = row[col.index];
-              const amount = amountStr ? parseFloat(amountStr.replace(/[^0-9.]/g, '')) : 0;
-              
-              if (amount > 0 && member) {
-                  const existingContrib = state.contributions.find(c => c.memberId === member!.id && c.month === col.month);
-                  
-                  if (existingContrib) {
-                      if (existingContrib.amount !== amount) {
-                          existingContrib.amount = amount;
-                      }
-                  } else {
-                      const newId = generateId();
-                      const contrib = {
-                          id: newId,
-                          memberId: member.id,
-                          amount: amount,
-                          date: new Date(`${col.month}-01`).toISOString(),
-                          month: col.month,
-                          note: 'Imported via CSV'
-                      };
-                      state.contributions.push(contrib);
-                  }
+          // Process monthly contributions
+          memberCols.dates.forEach(col => {
+            const amount = cleanNumber(rawCells[col.idx]);
+            if (amount > 0 && member) {
+              const existingContrib = state.contributions.find(c => c.memberId === member!.id && c.month === col.month);
+              if (existingContrib) {
+                if (existingContrib.amount !== amount) {
+                  existingContrib.amount = amount;
+                }
+              } else {
+                state.contributions.push({
+                  id: generateId(),
+                  memberId: member.id,
+                  amount,
+                  date: new Date(`${col.month}-01`).toISOString(),
+                  month: col.month,
+                  note: 'Imported via CSV'
+                });
               }
+            }
           });
+        } else if (currentSection === 'EVENTS' && eventCols && eventCols.name !== -1) {
+          const name = rawCells[eventCols.name]?.trim();
+          if (!name || name.toLowerCase().includes('event name') || name.toLowerCase().includes('events summary')) continue;
+
+          const dateRaw = eventCols.date !== -1 ? rawCells[eventCols.date]?.trim() : '';
+          let parsedDate = new Date().toISOString();
+          if (dateRaw) {
+            const parsed = new Date(dateRaw);
+            if (!isNaN(parsed.getTime())) {
+              parsedDate = parsed.toISOString();
+            }
+          }
+
+          const statusRaw = eventCols.status !== -1 ? rawCells[eventCols.status]?.trim().toLowerCase() : 'upcoming';
+          const status: 'upcoming' | 'completed' = (statusRaw.includes('comp') || statusRaw.includes('done') || statusRaw === 'past') ? 'completed' : 'upcoming';
+          
+          const budget = eventCols.budget !== -1 ? cleanNumber(rawCells[eventCols.budget]) : 0;
+          const description = eventCols.desc !== -1 ? (rawCells[eventCols.desc]?.trim() || '') : '';
+          const income = eventCols.income !== -1 ? cleanNumber(rawCells[eventCols.income]) : 0;
+          const expense = eventCols.expense !== -1 ? cleanNumber(rawCells[eventCols.expense]) : 0;
+
+          let event = state.events.find(e => e.name.toLowerCase() === name.toLowerCase());
+          if (event) {
+            let wasUpdated = false;
+            if (dateRaw && event.date !== parsedDate) { event.date = parsedDate; wasUpdated = true; }
+            if (event.status !== status) { event.status = status; wasUpdated = true; }
+            if (budget !== event.budget) { event.budget = budget; wasUpdated = true; }
+            if (description && event.description !== description) { event.description = description; wasUpdated = true; }
+            if (wasUpdated) eventsUpdated++;
+          } else {
+            event = {
+              id: generateId(),
+              name,
+              date: parsedDate,
+              status,
+              budget,
+              description: description || undefined
+            };
+            state.events.push(event);
+            eventsAdded++;
+          }
+
+          // Import Income if provided in event summary
+          if (income > 0) {
+            const existingIncomeTrans = state.eventTransactions.filter(t => t.eventId === event!.id && t.type === 'income');
+            const totalExistingIncome = existingIncomeTrans.reduce((s, t) => s + t.amount, 0);
+
+            if (totalExistingIncome === 0) {
+              state.eventTransactions.push({
+                id: generateId(),
+                eventId: event.id,
+                type: 'income',
+                amount: income,
+                date: parsedDate,
+                description: 'Imported Event Income'
+              });
+              transactionsAdded++;
+            } else if (existingIncomeTrans.length === 1 && existingIncomeTrans[0].description === 'Imported Event Income') {
+              existingIncomeTrans[0].amount = income;
+            }
+          }
+
+          // Import Expense if provided in event summary
+          if (expense > 0) {
+            const existingExpenseTrans = state.eventTransactions.filter(t => t.eventId === event!.id && t.type === 'expense');
+            const totalExistingExpense = existingExpenseTrans.reduce((s, t) => s + t.amount, 0);
+
+            if (totalExistingExpense === 0) {
+              state.eventTransactions.push({
+                id: generateId(),
+                eventId: event.id,
+                type: 'expense',
+                amount: expense,
+                date: parsedDate,
+                description: 'Imported Event Expense'
+              });
+              transactionsAdded++;
+            } else if (existingExpenseTrans.length === 1 && existingExpenseTrans[0].description === 'Imported Event Expense') {
+              existingExpenseTrans[0].amount = expense;
+            }
+          }
+        } else if (currentSection === 'TRANSACTIONS' && transCols && transCols.eventName !== -1) {
+          const eventName = rawCells[transCols.eventName]?.trim();
+          if (!eventName || eventName.toLowerCase().includes('event name')) continue;
+
+          let event = state.events.find(e => e.name.toLowerCase() === eventName.toLowerCase());
+          if (!event) {
+            event = {
+              id: generateId(),
+              name: eventName,
+              date: new Date().toISOString(),
+              status: 'upcoming',
+              budget: 0
+            };
+            state.events.push(event);
+            eventsAdded++;
+          }
+
+          // If this event has itemized transactions, clean up any generic placeholder created from summary headers
+          if (!eventsWithItemizedTrans.has(event.id)) {
+            eventsWithItemizedTrans.add(event.id);
+            state.eventTransactions = state.eventTransactions.filter(t => 
+              !(t.eventId === event!.id && (t.description === 'Imported Event Income' || t.description === 'Imported Event Expense'))
+            );
+          }
+
+          const typeRaw = transCols.type !== -1 ? rawCells[transCols.type]?.trim().toLowerCase() : 'income';
+          const type: 'income' | 'expense' = typeRaw.includes('exp') ? 'expense' : 'income';
+
+          const amount = transCols.amount !== -1 ? cleanNumber(rawCells[transCols.amount]) : 0;
+          if (amount <= 0) continue;
+
+          const dateRaw = transCols.date !== -1 ? rawCells[transCols.date]?.trim() : '';
+          let parsedDate = new Date().toISOString();
+          if (dateRaw) {
+            const parsed = new Date(dateRaw);
+            if (!isNaN(parsed.getTime())) {
+              parsedDate = parsed.toISOString();
+            }
+          }
+
+          const description = transCols.desc !== -1 ? (rawCells[transCols.desc]?.trim() || '') : '';
+          const memberName = transCols.memberName !== -1 ? rawCells[transCols.memberName]?.trim() : '';
+          let memberId: string | undefined = undefined;
+          if (memberName) {
+            const m = state.members.find(mem => mem.name.toLowerCase() === memberName.toLowerCase());
+            if (m) memberId = m.id;
+          }
+
+          // Check for duplicate transaction
+          const isDuplicate = state.eventTransactions.some(t => 
+            t.eventId === event!.id &&
+            t.type === type &&
+            t.amount === amount &&
+            t.description === description &&
+            t.date.split('T')[0] === parsedDate.split('T')[0]
+          );
+
+          if (!isDuplicate) {
+            state.eventTransactions.push({
+              id: generateId(),
+              eventId: event.id,
+              type,
+              amount,
+              date: parsedDate,
+              description: description || `${type === 'income' ? 'Income' : 'Expense'} entry`,
+              memberId
+            });
+            transactionsAdded++;
+          }
+        }
+      }
+
+      const summaryParts: string[] = [];
+      if (membersAdded > 0 || membersUpdated > 0) {
+        summaryParts.push(`${membersAdded} members added, ${membersUpdated} updated`);
+      }
+      if (eventsAdded > 0 || eventsUpdated > 0) {
+        summaryParts.push(`${eventsAdded} events added, ${eventsUpdated} updated`);
+      }
+      if (transactionsAdded > 0) {
+        summaryParts.push(`${transactionsAdded} event transactions imported`);
+      }
+
+      if (summaryParts.length === 0) {
+        return { 
+          success: false, 
+          message: "No valid members or event records found in the uploaded CSV." 
+        };
       }
 
       saveState(state);
       return { 
-          success: true, 
-          message: `Import Successful: ${membersAdded} members added, ${membersUpdated} updated.` 
+        success: true, 
+        message: `Import Successful: ${summaryParts.join('; ')}.` 
       };
 
     } catch (error) {
       console.error("Import error", error);
-      return { success: false, message: "An unexpected error occurred during import." };
+      return { success: false, message: "An unexpected error occurred during CSV import." };
     }
   },
 
@@ -476,10 +754,10 @@ export const exportDataToCSV = (state: AppState) => {
 
   let csvContent = [headers.join(','), ...rows].join('\n');
 
-  // --- Append Events Summary ---
+  // --- Append Events Section ---
   if (state.events && state.events.length > 0) {
-      csvContent += '\n\n\nEVENTS SUMMARY\n';
-      csvContent += 'Event Name,Date,Status,Budget,Income,Expense,Net Balance\n';
+      csvContent += '\n\n\n--- EVENTS ---\n';
+      csvContent += 'Event Name,Date,Status,Budget,Description,Total Income,Total Expense,Net Balance\n';
       
       const transactions = state.eventTransactions || [];
       state.events.forEach(e => {
@@ -489,19 +767,51 @@ export const exportDataToCSV = (state: AppState) => {
           const net = inc - exp;
           
           const escapeCsv = (val: any) => {
-             const str = String(val || '');
-             if (str.includes(',')) return `"${str}"`;
+             const str = String(val ?? '');
+             if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+                 return `"${str.replace(/"/g, '""')}"`;
+             }
              return str;
           };
 
           const line = [
               escapeCsv(e.name), 
-              e.date.split('T')[0], 
+              e.date ? e.date.split('T')[0] : '', 
               e.status, 
               e.budget || 0, 
+              escapeCsv(e.description || ''),
               inc, 
               exp, 
               net
+          ].join(',');
+          csvContent += line + '\n';
+      });
+  }
+
+  // --- Append Event Transactions Section ---
+  if (state.eventTransactions && state.eventTransactions.length > 0) {
+      csvContent += '\n\n\n--- EVENT TRANSACTIONS ---\n';
+      csvContent += 'Event Name,Transaction Type,Amount,Date,Description,Member Name\n';
+      
+      const getMemberName = (id?: string) => state.members.find(m => m.id === id)?.name || '';
+      const getEventName = (id: string) => state.events.find(e => e.id === id)?.name || 'Unknown Event';
+
+      state.eventTransactions.forEach(t => {
+          const escapeCsv = (val: any) => {
+             const str = String(val ?? '');
+             if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+                 return `"${str.replace(/"/g, '""')}"`;
+             }
+             return str;
+          };
+
+          const line = [
+              escapeCsv(getEventName(t.eventId)),
+              t.type,
+              t.amount,
+              t.date ? t.date.split('T')[0] : '',
+              escapeCsv(t.description || ''),
+              escapeCsv(getMemberName(t.memberId))
           ].join(',');
           csvContent += line + '\n';
       });
